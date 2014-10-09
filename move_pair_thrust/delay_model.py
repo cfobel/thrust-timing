@@ -1,4 +1,9 @@
 from itertools import izip
+import cPickle as pickle
+
+import numpy as np
+import pandas as pd
+from path_helpers import path
 from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
 from cythrust.device_vector.extrema import minmax_float32_by_key
 from cythrust.device_vector.sort import sort_float32_by_int32_key, sort_int32
@@ -11,7 +16,6 @@ from cythrust.device_vector.partition import (
     partition_n_offset_int32_float32_stencil_non_negative)
 from cythrust.device_vector.copy import permute_float32, permute_n_int32
 from camip.device.CAMIP import sequence_int32
-import numpy as np
 
 
 try:
@@ -56,42 +60,24 @@ def _update_arrival_times_pandas(arrival_connections, arrival_times):
 @profile
 def _update_arrival_times_thrust(arrival_connections, arrival_times):
     print 'using thrust'
-    d_block_keys = DeviceVectorInt32.from_array(arrival_connections.block_key
-                                                .values)
-    d_reduced_block_keys = DeviceVectorInt32(d_block_keys.size)
+    block_keys = DeviceVectorInt32.from_array(arrival_connections
+                                              ['block_key'].as_matrix())
+    reduced_block_keys = DeviceVectorInt32(block_keys.size)
     d_arrival_times = DeviceVectorFloat32.from_array(arrival_connections
-                                                     .arrival_time.values)
-    d_min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
-    d_max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
+                                                     ['arrival_time']
+                                                     .as_matrix())
+    min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
+    max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
 
-    sort_float32_by_int32_key(d_block_keys, d_arrival_times)
-    block_count = minmax_float32_by_key(d_block_keys, d_arrival_times,
-                                        d_reduced_block_keys, d_min_arrivals,
-                                        d_max_arrivals)
+    sort_float32_by_int32_key(block_keys, d_arrival_times)
+    N = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
+                              min_arrivals, max_arrivals)
 
-    d_idx = DeviceVectorInt32(block_count)
-    sequence_int32(d_idx)
-
-    N = partition_n_int32_float32_stencil_non_negative(d_idx, d_min_arrivals,
-                                                       block_count)
-
-    d_ready_block_keys = DeviceVectorInt32(N)
-    permute_n_int32(d_reduced_block_keys, d_idx, N, d_ready_block_keys)
-
-    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
-    d_ready_block_arrival_times = DeviceVectorFloat32(N)
-    permute_float32(d_block_arrival_times, d_ready_block_keys,
-                    d_ready_block_arrival_times)
-
-    unresolved_count = partition_int32_float32_stencil_negative(
-        d_ready_block_keys, d_ready_block_arrival_times)
-
-    sequence_int32(d_idx)
-    N = partition_n_int32_float32_stencil_non_negative(d_idx, d_min_arrivals,
-                                                       N)
-
-    arrival_times[d_ready_block_keys[:unresolved_count]] = \
-        d_max_arrivals[:][d_idx[:N]]
+    ready_block_keys = reduced_block_keys[:N][(min_arrivals[:N] >= 0)]
+    unresolved_block_keys = ready_block_keys[arrival_times
+                                             [ready_block_keys] < 0]
+    arrival_times[unresolved_block_keys] = \
+        max_arrivals[:N][min_arrivals[:N] >= 0]
 
 
 class DelayModel(object):
@@ -252,16 +238,27 @@ class DelayModel(object):
                                        .index[not_ready_to_calculate]]
 
     @profile
-    def compute_arrival_times(self, use_thrust=True):
+    def compute_arrival_times(self, name, use_thrust=True):
         previous_connection_count = None
         arrival_connections = self.delay_connections.copy()
         connection_count = arrival_connections.shape[0]
 
+        i = 0
         while previous_connection_count != connection_count:
             connection_count = arrival_connections.shape[0]
             arrival_connections = self._compute_arrival_times(
                 arrival_connections, use_thrust)
             previous_connection_count = arrival_connections.shape[0]
+            cached = path('%s-i%d-arrival_times.pickled' % (name, i))
+            if use_thrust and cached.isfile():
+                data = pickle.load(cached.open('rb'))
+                if not (data == self.arrival_times).all():
+                    import pudb; pudb.set_trace()
+                print ' verified %d' % i
+            elif not use_thrust:
+                pd.Series(self.arrival_times).to_pickle(cached)
+                print 'wrote cached arrival times to:', cached
+            i += 1
         self.max_arrival_time = self.arrival_times.max()
         return self.arrival_times
 

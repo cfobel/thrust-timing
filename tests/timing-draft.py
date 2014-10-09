@@ -39,7 +39,8 @@ def test(netlist_namebase, use_thrust):
     adjacency_list = NetAdjacencyList.from_hdf_group(netlist_group)
     netlist_h5f.close()
     delay_model = DelayModel(adjacency_list)
-    arrival_times = delay_model.compute_arrival_times(use_thrust=use_thrust)
+    arrival_times = delay_model.compute_arrival_times(netlist_namebase,
+                                                      use_thrust=use_thrust)
 
     #import pudb; pudb.set_trace()
     cached = path('%s-arrival_times.pickled' % netlist_namebase)
