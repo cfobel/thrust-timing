@@ -1,7 +1,9 @@
 from itertools import izip
 from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
-from camip.device.CAMIP import sort_float32_by_int32, minmax_float32_by_key
-
+from cythrust.device_vector.sort import sort_float32_by_int32_key
+from cythrust.device_vector.extrema import minmax_float32_by_key
+from cythrust.device_vector.sort import sort_float32_by_int32_key, sort_int32
+from cythrust.device_vector.count import count_int32_key
 import numpy as np
 
 
@@ -56,7 +58,7 @@ def _update_arrival_times_thrust(arrival_connections, arrival_times):
     min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
     max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
 
-    sort_float32_by_int32(block_keys, d_arrival_times)
+    sort_float32_by_int32_key(block_keys, d_arrival_times)
     N = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
                               min_arrivals, max_arrivals)
 
@@ -99,10 +101,18 @@ class DelayModel(object):
         self.required_times[:] = 1e7
         self.required_times[self.global_block_keys.tolist()] = 0.
 
-        block_net_counts = (adjacency_list
-                            .connections[adjacency_list.connections
-                                         ['block_type'] == '.clb']
-                            .groupby('block_key').agg({'net_key': len}))
+        block_keys = DeviceVectorInt32.from_array(adjacency_list.connections
+                                                  .loc[adjacency_list
+                                                       .connections
+                                                       .block_type_key ==
+                                                       0].block_key
+                                                  .as_matrix())
+        sort_int32(block_keys)
+        reduced_block_keys = DeviceVectorInt32(block_keys.size)
+        block_net_counts = DeviceVectorInt32(block_keys.size)
+        N = count_int32_key(block_keys, reduced_block_keys, block_net_counts)
+        block_net_counts = block_net_counts[:N]
+        reduced_block_keys = reduced_block_keys[:N]
 
         # ## Set arrival-time to zero for blocks with only one net ##
         #
@@ -113,12 +123,10 @@ class DelayModel(object):
         #  - The block has no output, so is equivalent to no block at all.
         #
         # In either case, the arrival-time of the block can be set to zero.
-        for block_key, (net_count, ) in block_net_counts.iterrows():
-            if net_count < 2:
-                # Block is only connected to one net, so set arrival-time to
-                # zero.
-                self.arrival_times[block_key] = 0.
-                self.required_times[block_key] = 0.
+        single_connection_blocks = reduced_block_keys[block_net_counts < 2]
+
+        self.arrival_times[single_connection_blocks] = 0.
+        self.required_times[single_connection_blocks] = 0.
 
         self.delay_connections = adjacency_list.sink_connections.copy()
         self.delay_connections['net_driver_block_key'] = (
