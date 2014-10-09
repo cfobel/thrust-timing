@@ -39,10 +39,10 @@ def test(netlist_namebase, use_thrust):
     adjacency_list = NetAdjacencyList.from_hdf_group(netlist_group)
     netlist_h5f.close()
     delay_model = DelayModel(adjacency_list)
+    #import pudb; pudb.set_trace()
     arrival_times = delay_model.compute_arrival_times(netlist_namebase,
                                                       use_thrust=use_thrust)
 
-    #import pudb; pudb.set_trace()
     cached = path('%s-arrival_times.pickled' % netlist_namebase)
     if use_thrust and cached.isfile():
         data = pickle.load(cached.open('rb'))
@@ -69,6 +69,5 @@ def parse_args(argv=None):
 
 
 if __name__ == '__main__':
-    #import pudb; pudb.set_trace()
     args = parse_args()
     test(args.net_file_namebase, use_thrust=(not args.disable_thrust))

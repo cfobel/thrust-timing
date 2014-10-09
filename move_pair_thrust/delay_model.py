@@ -70,14 +70,41 @@ def _update_arrival_times_thrust(arrival_connections, arrival_times):
     max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
 
     sort_float32_by_int32_key(block_keys, d_arrival_times)
-    N = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
-                              min_arrivals, max_arrivals)
+    N_ = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
+                               min_arrivals, max_arrivals)
 
-    ready_block_keys = reduced_block_keys[:N][(min_arrivals[:N] >= 0)]
-    unresolved_block_keys = ready_block_keys[arrival_times
-                                             [ready_block_keys] < 0]
+    # new code
+    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
+    d_idx = DeviceVectorInt32(len(arrival_connections))
+    sequence_int32(d_idx)
+
+    block_count = partition_n_int32_float32_stencil_non_negative(
+        d_idx, min_arrivals, N_)
+
+    d_ready_block_keys = DeviceVectorInt32(block_count)
+    permute_n_int32(reduced_block_keys, d_idx, block_count, d_ready_block_keys)
+
+    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
+    d_ready_block_arrival_times = DeviceVectorFloat32(block_count)
+    permute_float32(d_block_arrival_times, d_ready_block_keys,
+                    d_ready_block_arrival_times)
+
+    unresolved_count = partition_int32_float32_stencil_negative(
+        d_ready_block_keys, d_ready_block_arrival_times)
+
+    #sequence_int32(d_idx)
+    #N = partition_n_int32_float32_stencil_non_negative(d_idx, min_arrivals,
+                                                       #block_count)
+
+    #arrival_times[d_ready_block_keys[:unresolved_count]] = \
+        #d_max_arrivals[:][d_idx[:N]]
+    pass
+    #unresolved_block_keys = ready_block_keys[arrival_times
+                                             #[ready_block_keys] < 0]
+    unresolved_block_keys = d_ready_block_keys[:unresolved_count]
+
     arrival_times[unresolved_block_keys] = \
-        max_arrivals[:N][min_arrivals[:N] >= 0]
+        max_arrivals[:N_][min_arrivals[:N_] >= 0]
 
 
 class DelayModel(object):
