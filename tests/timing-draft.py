@@ -68,5 +68,6 @@ def parse_args(argv=None):
 
 
 if __name__ == '__main__':
+    #import pudb; pudb.set_trace()
     args = parse_args()
     test(args.net_file_namebase, use_thrust=(not args.disable_thrust))

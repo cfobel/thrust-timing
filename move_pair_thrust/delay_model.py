@@ -1,9 +1,16 @@
 from itertools import izip
 from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
-from cythrust.device_vector.sort import sort_float32_by_int32_key
 from cythrust.device_vector.extrema import minmax_float32_by_key
 from cythrust.device_vector.sort import sort_float32_by_int32_key, sort_int32
 from cythrust.device_vector.count import count_int32_key
+from cythrust.device_vector.sum import sum_n_float32_float32_stencil
+from cythrust.device_vector.partition import (
+    partition_int32_float32_stencil_non_negative,
+    partition_int32_float32_stencil_negative,
+    partition_n_int32_float32_stencil_non_negative,
+    partition_n_offset_int32_float32_stencil_non_negative)
+from cythrust.device_vector.copy import permute_float32, permute_n_int32
+from camip.device.CAMIP import sequence_int32
 import numpy as np
 
 
@@ -49,32 +56,50 @@ def _update_arrival_times_pandas(arrival_connections, arrival_times):
 @profile
 def _update_arrival_times_thrust(arrival_connections, arrival_times):
     print 'using thrust'
-    block_keys = DeviceVectorInt32.from_array(arrival_connections
-                                              ['block_key'].as_matrix())
-    reduced_block_keys = DeviceVectorInt32(block_keys.size)
+    d_block_keys = DeviceVectorInt32.from_array(arrival_connections.block_key
+                                                .values)
+    d_reduced_block_keys = DeviceVectorInt32(d_block_keys.size)
     d_arrival_times = DeviceVectorFloat32.from_array(arrival_connections
-                                                     ['arrival_time']
-                                                     .as_matrix())
-    min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
-    max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
+                                                     .arrival_time.values)
+    d_min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
+    d_max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
 
-    sort_float32_by_int32_key(block_keys, d_arrival_times)
-    N = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
-                              min_arrivals, max_arrivals)
+    sort_float32_by_int32_key(d_block_keys, d_arrival_times)
+    block_count = minmax_float32_by_key(d_block_keys, d_arrival_times,
+                                        d_reduced_block_keys, d_min_arrivals,
+                                        d_max_arrivals)
 
-    ready_block_keys = reduced_block_keys[:N][(min_arrivals[:N] >= 0)]
-    unresolved_block_keys = ready_block_keys[arrival_times
-                                             [ready_block_keys] < 0]
-    arrival_times[unresolved_block_keys] = \
-        max_arrivals[:N][min_arrivals[:N] >= 0]
+    d_idx = DeviceVectorInt32(block_count)
+    sequence_int32(d_idx)
+
+    N = partition_n_int32_float32_stencil_non_negative(d_idx, d_min_arrivals,
+                                                       block_count)
+
+    d_ready_block_keys = DeviceVectorInt32(N)
+    permute_n_int32(d_reduced_block_keys, d_idx, N, d_ready_block_keys)
+
+    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
+    d_ready_block_arrival_times = DeviceVectorFloat32(N)
+    permute_float32(d_block_arrival_times, d_ready_block_keys,
+                    d_ready_block_arrival_times)
+
+    unresolved_count = partition_int32_float32_stencil_negative(
+        d_ready_block_keys, d_ready_block_arrival_times)
+
+    sequence_int32(d_idx)
+    N = partition_n_int32_float32_stencil_non_negative(d_idx, d_min_arrivals,
+                                                       N)
+
+    arrival_times[d_ready_block_keys[:unresolved_count]] = \
+        d_max_arrivals[:][d_idx[:N]]
 
 
 class DelayModel(object):
     @profile
     def __init__(self, adjacency_list, delay=unit_delay):
         self.adjacency_list = adjacency_list
-        self.net_drivers = np.array(adjacency_list.driver_connections
-                                    .drop_duplicates()['block_key'])
+        self.net_drivers = (adjacency_list.driver_connections.drop_duplicates()
+                            .block_key.values)
         self.delay = delay
         self.arrival_times = np.empty(adjacency_list.block_count, dtype='f32')
         self.required_times = np.empty(adjacency_list.block_count, dtype='f32')
@@ -143,7 +168,7 @@ class DelayModel(object):
                                    ['net_driver_block_key']])
         # We compute the delays here, since with unit delay, the delays are
         # static and only need to be computed once.
-        self.delay_connections['delay'] = self.compute_connection_delays()
+        self.delay_connections['delay'] = 1.
 
     @profile
     def compute_connection_delays(self):
@@ -164,25 +189,41 @@ class DelayModel(object):
 
     @profile
     def _compute_arrival_times(self, arrival_connections, use_thrust=True):
+        d_block_arrival_times = DeviceVectorFloat32.from_array(self
+                                                               .arrival_times)
+        d_net_driver_block_key = DeviceVectorInt32.from_array(
+            arrival_connections.net_driver_block_key.values)
+        d_driver_arrival_time = DeviceVectorFloat32(len(arrival_connections))
+
         # For each connection, gather the arrival time of the driver of the
         # corresponding net.
-        arrival_connections['driver_arrival_time'] = (
-            self.arrival_times[arrival_connections
-                               ['net_driver_block_key'].tolist()])
-        # Create mask, defining which connections are ready for reduction.
-        # __NB__ A connection is ready for reduction once the arrival time is
-        # available for the block that is driving the respective net.
-        ready_to_calculate = (arrival_connections
-                              ['driver_arrival_time'] >= 0)
-        arrival_connections['arrival_time'] = -1
+        permute_float32(d_block_arrival_times, d_net_driver_block_key,
+                        d_driver_arrival_time)
+
+        # Create mask, defining which connections are _not_ ready for
+        # reduction. __NB__ A connection is ready for reduction once the
+        # arrival time is available for the block that is driving the
+        # respective net.
+        d_idx = DeviceVectorInt32(len(arrival_connections))
+        sequence_int32(d_idx)
+
+        N = partition_int32_float32_stencil_non_negative(d_idx,
+                                                         d_driver_arrival_time)
+        d_delay = DeviceVectorFloat32.from_array(arrival_connections.delay
+                                                 .values)
+        # ready_to_calculate = d_idx[N:]
+        not_ready_to_calculate = d_idx[N:]
+
+        d_arrival_times = DeviceVectorFloat32(len(arrival_connections))
+        d_arrival_times[:] = -1
+        sum_n_float32_float32_stencil(N, d_idx, d_driver_arrival_time, d_delay,
+                                      d_arrival_times)
+
         # For each connection where the driver arrival time has been resolved,
         # compute the arrival time of the corresponding block, based on the
         # arrival time of the driver and the delay between the driver block and
         # the connection block.
-        arrival_connections['arrival_time'][ready_to_calculate] = (
-            arrival_connections['driver_arrival_time']
-            [ready_to_calculate] +
-            arrival_connections['delay'][ready_to_calculate])
+        arrival_connections['arrival_time'] = d_arrival_times[:]
 
         # Reduce the computed connection arrival-times by block-key, to collect
         # the _minimum_ and _maximum_ arrival-time for each block.
@@ -205,7 +246,10 @@ class DelayModel(object):
             _update_arrival_times_pandas(arrival_connections,
                                          self.arrival_times)
 
-        return arrival_connections[~ready_to_calculate].copy()
+        # TODO: Migrate away from using Pandas table for arrival_connections,
+        # since the line below contributes ~75% of the run-time of this method.
+        return arrival_connections.loc[arrival_connections
+                                       .index[not_ready_to_calculate]]
 
     @profile
     def compute_arrival_times(self, use_thrust=True):
