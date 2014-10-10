@@ -74,7 +74,7 @@ def _update_arrival_times_thrust(arrival_connections, arrival_times):
                                min_arrivals, max_arrivals)
 
     # new code
-    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
+    d_block_arrival_times = arrival_times
     d_idx = DeviceVectorInt32(len(arrival_connections))
     sequence_int32(d_idx)
 
@@ -84,7 +84,6 @@ def _update_arrival_times_thrust(arrival_connections, arrival_times):
     d_ready_block_keys = DeviceVectorInt32(block_count)
     permute_n_int32(reduced_block_keys, d_idx, block_count, d_ready_block_keys)
 
-    d_block_arrival_times = DeviceVectorFloat32.from_array(arrival_times)
     d_ready_block_arrival_times = DeviceVectorFloat32(block_count)
     permute_float32(d_block_arrival_times, d_ready_block_keys,
                     d_ready_block_arrival_times)
@@ -103,8 +102,9 @@ def _update_arrival_times_thrust(arrival_connections, arrival_times):
                                              #[ready_block_keys] < 0]
     unresolved_block_keys = d_ready_block_keys[:unresolved_count]
 
-    arrival_times[unresolved_block_keys] = \
-        max_arrivals[:N_][min_arrivals[:N_] >= 0]
+    temp = arrival_times[:]
+    temp[unresolved_block_keys] = max_arrivals[:N_][min_arrivals[:N_] >= 0]
+    arrival_times[:] = temp
 
 
 class DelayModel(object):
@@ -114,7 +114,8 @@ class DelayModel(object):
         self.net_drivers = (adjacency_list.driver_connections.drop_duplicates()
                             .block_key.values)
         self.delay = delay
-        self.arrival_times = np.empty(adjacency_list.block_count, dtype='f32')
+        #self.arrival_times = np.empty(adjacency_list.block_count, dtype='f32')
+        self.arrival_times = DeviceVectorFloat32(adjacency_list.block_count)
         self.required_times = np.empty(adjacency_list.block_count, dtype='f32')
         if adjacency_list.ignore_clock:
             self.global_block_keys = np.array([], dtype='uint32')
@@ -131,8 +132,11 @@ class DelayModel(object):
         #
         # Assign an arrival time of -1 to all other blocks.
         self.arrival_times[:] = -1
-        self.arrival_times[adjacency_list.clocked_driver_block_keys] = 0.
-        self.arrival_times[self.global_block_keys.tolist()] = 0.
+        arrival_times = self.arrival_times[:]
+        arrival_times[adjacency_list.clocked_driver_block_keys] = 0.
+        arrival_times[self.global_block_keys.tolist()] = 0.
+        self.arrival_times[:] = arrival_times
+        del arrival_times
         self.max_arrival_time = -1
 
         # Assign an initial required-time of "infinity" to all blocks.
@@ -163,7 +167,10 @@ class DelayModel(object):
         # In either case, the arrival-time of the block can be set to zero.
         single_connection_blocks = reduced_block_keys[block_net_counts < 2]
 
-        self.arrival_times[single_connection_blocks] = 0.
+        arrival_times = self.arrival_times[:]
+        arrival_times[single_connection_blocks] = 0.
+        self.arrival_times[:] = arrival_times
+        del arrival_times
         self.required_times[single_connection_blocks] = 0.
 
         self.delay_connections = adjacency_list.sink_connections.copy()
@@ -202,8 +209,7 @@ class DelayModel(object):
 
     @profile
     def _compute_arrival_times(self, arrival_connections, use_thrust=True):
-        d_block_arrival_times = DeviceVectorFloat32.from_array(self
-                                                               .arrival_times)
+        d_block_arrival_times = self.arrival_times
         d_net_driver_block_key = DeviceVectorInt32.from_array(
             arrival_connections.net_driver_block_key.values)
         d_driver_arrival_time = DeviceVectorFloat32(len(arrival_connections))
@@ -279,15 +285,15 @@ class DelayModel(object):
             cached = path('%s-i%d-arrival_times.pickled' % (name, i))
             if use_thrust and cached.isfile():
                 data = pickle.load(cached.open('rb'))
-                if not (data == self.arrival_times).all():
+                if not (data == self.arrival_times[:]).all():
                     import pudb; pudb.set_trace()
                 print ' verified %d' % i
             elif not use_thrust:
                 pd.Series(self.arrival_times).to_pickle(cached)
                 print 'wrote cached arrival times to:', cached
             i += 1
-        self.max_arrival_time = self.arrival_times.max()
-        return self.arrival_times
+        self.max_arrival_time = self.arrival_times[:].max()
+        return self.arrival_times[:]
 
     @profile
     def compute_required_times(self):
