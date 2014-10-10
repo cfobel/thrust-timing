@@ -16,7 +16,8 @@ from cythrust.device_vector.partition import (
     partition_n_offset_int32_float32_stencil_non_negative)
 from cythrust.device_vector.copy import permute_float32, permute_n_int32
 from camip.device.CAMIP import sequence_int32
-from .DELAY_MODEL import fill_arrival_times, resolve_block_arrival_times
+from .DELAY_MODEL import (fill_arrival_times, resolve_block_arrival_times,
+                          move_resolved_data_to_front)
 
 
 try:
@@ -68,18 +69,32 @@ class TempTimingData(object):
         self.d_ready_block_arrival_times = DeviceVectorFloat32(block_count)
         self.block_keys = DeviceVectorInt32(connection_count)
 
+        self.driver_arrival_time = DeviceVectorFloat32(connection_count)
+        self.delay = DeviceVectorFloat32(connection_count)
+        self.arrival_time = DeviceVectorFloat32(connection_count)
+
+
+class PartitionTimingData(object):
+    def __init__(self, arrival_connections):
+        self.block_keys = DeviceVectorInt32.from_array(arrival_connections
+                                                       .block_key.values)
+        self.net_driver_block_key = DeviceVectorInt32.from_array(
+            arrival_connections.net_driver_block_key.values)
+        self.lengths = []
+
+    def partition(self, N, driver_arrival_time):
+        move_resolved_data_to_front(self.block_keys, self.net_driver_block_key,
+                                    driver_arrival_time)
+        self.lengths.append(N)
+
 
 @profile
 def _update_arrival_times_thrust(arrival_connections, arrival_times,
-                                 d_arrival_time):
+                                 timing_data, vectors):
     print 'using thrust: len(arrival_connections) = ', len(arrival_connections)
 
-    vectors = TempTimingData(len(arrival_connections), arrival_times.size)
-
-    vectors.block_keys[:] = arrival_connections['block_key'].as_matrix()
-
-    sort_float32_by_int32_key(vectors.block_keys, d_arrival_time)
-    N_ = minmax_float32_by_key(vectors.block_keys, d_arrival_time,
+    sort_float32_by_int32_key(timing_data.block_keys, vectors.arrival_time)
+    N_ = minmax_float32_by_key(timing_data.block_keys, vectors.arrival_time,
                                vectors.reduced_block_keys,
                                vectors.min_arrivals, vectors.max_arrivals)
 
@@ -243,36 +258,38 @@ class DelayModel(object):
                      ['net_driver_block_key'])]
 
     @profile
-    def _compute_arrival_times(self, arrival_connections, use_thrust=True):
+    def _compute_arrival_times(self, arrival_connections, use_thrust=True,
+                               persistent_timing_data=None):
         d_block_arrival_times = self.arrival_times
-        d_net_driver_block_key = DeviceVectorInt32.from_array(
-            arrival_connections.net_driver_block_key.values)
-        d_driver_arrival_time = DeviceVectorFloat32(len(arrival_connections))
+
+        timing_data = PartitionTimingData(arrival_connections)
+        vectors = TempTimingData(len(arrival_connections),
+                                 self.arrival_times.size)
 
         # For each connection, gather the arrival time of the driver of the
         # corresponding net.
-        permute_float32(d_block_arrival_times, d_net_driver_block_key,
-                        d_driver_arrival_time)
+        permute_float32(d_block_arrival_times,
+                        timing_data.net_driver_block_key,
+                        vectors.driver_arrival_time)
 
         # Create mask, d_fining which connections are _not_ ready for
         # reduction. __NB__ A connection is ready for reduction once the
         # arrival time is available for the block that is d_iving the
         # respective net.
-        d_delay = DeviceVectorFloat32(len(arrival_connections))
-        d_arrival_time = DeviceVectorFloat32(len(arrival_connections))
-        d_idx = DeviceVectorInt32(len(arrival_connections))
-        sequence_int32(d_idx)
+        sequence_int32(vectors.d_idx)
 
-        N = partition_int32_float32_stencil_non_negative(d_idx,
-                                                         d_driver_arrival_time)
-        d_delay[:] = 1.
+        N = partition_int32_float32_stencil_non_negative(vectors.d_idx,
+                                                         vectors
+                                                         .driver_arrival_time)
+        vectors.delay[:] = 1.
 
         # ready_to_calculate = d_idx[N:]
-        not_ready_to_calculate = d_idx[N:]
+        not_ready_to_calculate = vectors.d_idx[N:]
 
-        d_arrival_time[:] = -1
-        sum_n_float32_float32_stencil(N, d_idx, d_driver_arrival_time, d_delay,
-                                      d_arrival_time)
+        vectors.arrival_time[:] = -1
+        sum_n_float32_float32_stencil(N, vectors.d_idx,
+                                      vectors.driver_arrival_time,
+                                      vectors.delay, vectors.arrival_time)
 
         # For each connection where the driver arrival time has been resolved,
         # compute the arrival time of the corresponding block, based on the
@@ -297,15 +314,15 @@ class DelayModel(object):
         if use_thrust:
             _update_arrival_times_thrust(arrival_connections,
                                          self.arrival_times,
-                                         d_arrival_time)
-        else:
-            _update_arrival_times_pandas(arrival_connections,
-                                         self.arrival_times)
+                                         timing_data, vectors)
 
         # TODO: Migrate away from using Pandas table for arrival_connections,
         # since the line below contributes ~75% of the run-time of this method.
-        return arrival_connections.loc[arrival_connections
-                                       .index[not_ready_to_calculate]]
+        new_connections = arrival_connections.loc[arrival_connections.index
+                                                  [not_ready_to_calculate]]
+        if persistent_timing_data is not None:
+            persistent_timing_data.partition(N, vectors.driver_arrival_time)
+        return new_connections
 
     @profile
     def compute_arrival_times(self, name, use_thrust=True):
@@ -313,11 +330,12 @@ class DelayModel(object):
         arrival_connections = self.delay_connections.copy()
         connection_count = arrival_connections.shape[0]
 
+        persistent_timing_data = PartitionTimingData(arrival_connections)
         i = 0
         while previous_connection_count != connection_count:
             connection_count = arrival_connections.shape[0]
             arrival_connections = self._compute_arrival_times(
-                arrival_connections, use_thrust)
+                arrival_connections, use_thrust, persistent_timing_data)
             previous_connection_count = arrival_connections.shape[0]
             cached = path('%s-i%d-arrival_times.pickled' % (name, i))
             if use_thrust and cached.isfile():
