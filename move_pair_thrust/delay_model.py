@@ -16,7 +16,7 @@ from cythrust.device_vector.partition import (
     partition_n_offset_int32_float32_stencil_non_negative)
 from cythrust.device_vector.copy import permute_float32, permute_n_int32
 from camip.device.CAMIP import sequence_int32
-from .DELAY_MODEL import fill_arrival_times
+from .DELAY_MODEL import fill_arrival_times, resolve_block_arrival_times
 
 
 try:
@@ -58,54 +58,85 @@ def _update_arrival_times_pandas(arrival_connections, arrival_times):
             arrival_times[block_key] = max_arrival
 
 
-@profile
-def _update_arrival_times_thrust(arrival_connections, arrival_times):
-    print 'using thrust: len(arrival_connections) = ', len(arrival_connections)
-    block_keys = DeviceVectorInt32.from_array(arrival_connections
-                                              ['block_key'].as_matrix())
-    reduced_block_keys = DeviceVectorInt32(block_keys.size)
-    d_arrival_times = DeviceVectorFloat32.from_array(arrival_connections
-                                                     ['arrival_time']
-                                                     .as_matrix())
-    min_arrivals = DeviceVectorFloat32(d_arrival_times.size)
-    max_arrivals = DeviceVectorFloat32(d_arrival_times.size)
+class TempTimingData(object):
+    def __init__(self, connection_count, block_count):
+        self.reduced_block_keys = DeviceVectorInt32(connection_count)
+        self.min_arrivals = DeviceVectorFloat32(connection_count)
+        self.max_arrivals = DeviceVectorFloat32(connection_count)
+        self.d_idx = DeviceVectorInt32(connection_count)
+        self.d_ready_block_keys = DeviceVectorInt32(block_count)
+        self.d_ready_block_arrival_times = DeviceVectorFloat32(block_count)
+        self.block_keys = DeviceVectorInt32(connection_count)
 
-    sort_float32_by_int32_key(block_keys, d_arrival_times)
-    N_ = minmax_float32_by_key(block_keys, d_arrival_times, reduced_block_keys,
-                               min_arrivals, max_arrivals)
+
+@profile
+def _update_arrival_times_thrust(arrival_connections, arrival_times,
+                                 d_arrival_time):
+    print 'using thrust: len(arrival_connections) = ', len(arrival_connections)
+
+    vectors = TempTimingData(len(arrival_connections), arrival_times.size)
+
+    vectors.block_keys[:] = arrival_connections['block_key'].as_matrix()
+
+    sort_float32_by_int32_key(vectors.block_keys, d_arrival_time)
+    N_ = minmax_float32_by_key(vectors.block_keys, d_arrival_time,
+                               vectors.reduced_block_keys,
+                               vectors.min_arrivals, vectors.max_arrivals)
 
     # new code
     d_block_arrival_times = arrival_times
-    d_idx = DeviceVectorInt32(len(arrival_connections))
-    sequence_int32(d_idx)
+    sequence_int32(vectors.d_idx)
 
     block_count = partition_n_int32_float32_stencil_non_negative(
-        d_idx, min_arrivals, N_)
+        vectors.d_idx, vectors.min_arrivals, N_)
 
-    d_ready_block_keys = DeviceVectorInt32(block_count)
-    permute_n_int32(reduced_block_keys, d_idx, block_count, d_ready_block_keys)
+    permute_n_int32(vectors.reduced_block_keys, vectors.d_idx, block_count,
+                    vectors.d_ready_block_keys)
 
-    d_ready_block_arrival_times = DeviceVectorFloat32(block_count)
-    permute_float32(d_block_arrival_times, d_ready_block_keys,
-                    d_ready_block_arrival_times)
+    permute_float32(d_block_arrival_times, vectors.d_ready_block_keys,
+                    vectors.d_ready_block_arrival_times)
 
     unresolved_count = partition_int32_float32_stencil_negative(
-        d_ready_block_keys, d_ready_block_arrival_times)
+        vectors.d_ready_block_keys, vectors.d_ready_block_arrival_times)
 
-    #sequence_int32(d_idx)
-    #N = partition_n_int32_float32_stencil_non_negative(d_idx, min_arrivals,
-                                                       #block_count)
+    sequence_int32(vectors.d_idx)
+    partition_n_int32_float32_stencil_non_negative(vectors.d_idx,
+                                                   vectors.min_arrivals, N_)
 
-    #arrival_times[d_ready_block_keys[:unresolved_count]] = \
-        #d_max_arrivals[:][d_idx[:N]]
-    pass
-    #unresolved_block_keys = ready_block_keys[arrival_times
-                                             #[ready_block_keys] < 0]
-    unresolved_block_keys = d_ready_block_keys[:unresolved_count]
+    resolve_block_arrival_times(unresolved_count, vectors.max_arrivals,
+                                vectors.d_idx, arrival_times,
+                                vectors.d_ready_block_keys)
 
-    temp = arrival_times[:]
-    temp[unresolved_block_keys] = max_arrivals[:N_][min_arrivals[:N_] >= 0]
-    arrival_times[:] = temp
+
+class ConnectionTable(object):
+    def __init__(self, block_count, sink_count):
+        self.block_arrival_times = DeviceVectorFloat32(block_count)
+
+        self.arrival_time = DeviceVectorFloat32(sink_count)
+        self.block_key = DeviceVectorInt32(sink_count)
+        self.delay = DeviceVectorFloat32(sink_count)
+        self.net_driver_block_key = DeviceVectorInt32(sink_count)
+
+        self.driver_arrival_time = DeviceVectorFloat32(sink_count)
+        self.idx = DeviceVectorInt32(sink_count)
+        self.max_arrivals = DeviceVectorFloat32(sink_count)
+        self.min_arrivals = DeviceVectorFloat32(sink_count)
+
+    @classmethod
+    def from_dataframe(cls, block_count, connections_frame):
+        result = ConnectionTable(block_count, len(connections_frame))
+
+        result.block_key[:] = connections_frame.block_key.values
+        result.delay[:] = connections_frame.delay.values
+        result.net_driver_block_key[:] = (connections_frame
+                                          .net_driver_block_key.values)
+        return result
+
+    def reset_arrival_times(self, clocked_driver_block_keys):
+        self.block_arrival_times[:] = -1
+        block_arrival_times = self.block_arrival_times[:]
+        block_arrival_times[clocked_driver_block_keys] = 0.
+        self.block_arrival_times[:] = block_arrival_times
 
 
 class DelayModel(object):
@@ -141,13 +172,12 @@ class DelayModel(object):
         self.required_times[:] = 1e7
         self.required_times[self.global_block_keys.tolist()] = 0.
 
-        block_keys = DeviceVectorInt32.from_array(adjacency_list.connections
-                                                  .loc[adjacency_list
-                                                       .connections
-                                                       .block_type_key ==
-                                                       0].block_key
-                                                  .as_matrix())
+        block_keys = DeviceVectorInt32.from_array(
+            adjacency_list.connections.loc[adjacency_list.connections
+                                           .block_type_key == 0].block_key
+            .as_matrix())
         sort_int32(block_keys)
+
         reduced_block_keys = DeviceVectorInt32(block_keys.size)
         block_net_counts = DeviceVectorInt32(block_keys.size)
         N = count_int32_key(block_keys, reduced_block_keys, block_net_counts)
@@ -177,20 +207,23 @@ class DelayModel(object):
 
         self.delay_connections = adjacency_list.sink_connections.sort('block_key')
         self.delay_connections['net_driver_block_key'] = (
-            self.net_drivers[self.delay_connections['net_key'].tolist()])
+            self.net_drivers[self.delay_connections['net_key'].values])
+
         # Filter connections to only include connections that are not driving
         # the associated net.
         #
         # TODO: This might be redundant, since I think this should already be
         # taken care of by initializing the `delay_connections` from the
         # `sink_connections` of the `adjacency_list`.
-        self.delay_connections = (self.delay_connections
-                                  [self.delay_connections['block_key'] !=
+        self.delay_connections = (
+            self.delay_connections[self.delay_connections.block_key !=
                                    self.delay_connections
-                                   ['net_driver_block_key']])
+                                   .net_driver_block_key])
         # We compute the delays here, since with unit delay, the delays are
         # static and only need to be computed once.
         self.delay_connections['delay'] = 1.
+        self.connections = ConnectionTable.from_dataframe(
+            self.arrival_times.size, self.delay_connections)
 
     @profile
     def compute_connection_delays(self):
@@ -221,30 +254,31 @@ class DelayModel(object):
         permute_float32(d_block_arrival_times, d_net_driver_block_key,
                         d_driver_arrival_time)
 
-        # Create mask, defining which connections are _not_ ready for
+        # Create mask, d_fining which connections are _not_ ready for
         # reduction. __NB__ A connection is ready for reduction once the
-        # arrival time is available for the block that is driving the
+        # arrival time is available for the block that is d_iving the
         # respective net.
+        d_delay = DeviceVectorFloat32(len(arrival_connections))
+        d_arrival_time = DeviceVectorFloat32(len(arrival_connections))
         d_idx = DeviceVectorInt32(len(arrival_connections))
         sequence_int32(d_idx)
 
         N = partition_int32_float32_stencil_non_negative(d_idx,
                                                          d_driver_arrival_time)
-        d_delay = DeviceVectorFloat32.from_array(arrival_connections.delay
-                                                 .values)
+        d_delay[:] = 1.
+
         # ready_to_calculate = d_idx[N:]
         not_ready_to_calculate = d_idx[N:]
 
-        d_arrival_times = DeviceVectorFloat32(len(arrival_connections))
-        d_arrival_times[:] = -1
+        d_arrival_time[:] = -1
         sum_n_float32_float32_stencil(N, d_idx, d_driver_arrival_time, d_delay,
-                                      d_arrival_times)
+                                      d_arrival_time)
 
         # For each connection where the driver arrival time has been resolved,
         # compute the arrival time of the corresponding block, based on the
         # arrival time of the driver and the delay between the driver block and
         # the connection block.
-        arrival_connections['arrival_time'] = d_arrival_times[:]
+        #arrival_connections['arrival_time'] = d_arrival_times[:]
 
         # Reduce the computed connection arrival-times by block-key, to collect
         # the _minimum_ and _maximum_ arrival-time for each block.
@@ -262,7 +296,8 @@ class DelayModel(object):
         # arrival-time represents the arrival-time for the corresponding block.
         if use_thrust:
             _update_arrival_times_thrust(arrival_connections,
-                                         self.arrival_times)
+                                         self.arrival_times,
+                                         d_arrival_time)
         else:
             _update_arrival_times_pandas(arrival_connections,
                                          self.arrival_times)

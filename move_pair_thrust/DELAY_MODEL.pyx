@@ -53,3 +53,21 @@ cpdef fill_arrival_times(DeviceVectorInt32 clocked_driver_block_keys,
     fill_n(make_permutation_iterator(arrival_times._vector.begin(),
                                      single_connection_blocks._vector.begin()),
            count, 0)
+
+
+def resolve_block_arrival_times(size_t unresolved_count,
+                                DeviceVectorFloat32 max_arrivals,
+                                DeviceVectorInt32 max_arrivals_index,
+                                DeviceVectorFloat32 arrival_times,
+                                DeviceVectorInt32 block_keys_to_resolve):
+    '''
+    Equivalent to:
+
+        arrival_times[block_keys_to_resolve] = max_arrivals[max_arrivals_index]
+    '''
+    copy_n(
+        make_permutation_iterator(max_arrivals._vector.begin(),
+                                  max_arrivals_index._vector.begin()),
+        unresolved_count,
+        make_permutation_iterator(arrival_times._vector.begin(),
+                                  block_keys_to_resolve._vector.begin()))
