@@ -16,6 +16,7 @@ from cythrust.device_vector.partition import (
     partition_n_offset_int32_float32_stencil_non_negative)
 from cythrust.device_vector.copy import permute_float32, permute_n_int32
 from camip.device.CAMIP import sequence_int32
+from .DELAY_MODEL import fill_arrival_times
 
 
 try:
@@ -59,7 +60,7 @@ def _update_arrival_times_pandas(arrival_connections, arrival_times):
 
 @profile
 def _update_arrival_times_thrust(arrival_connections, arrival_times):
-    print 'using thrust'
+    print 'using thrust: len(arrival_connections) = ', len(arrival_connections)
     block_keys = DeviceVectorInt32.from_array(arrival_connections
                                               ['block_key'].as_matrix())
     reduced_block_keys = DeviceVectorInt32(block_keys.size)
@@ -131,13 +132,10 @@ class DelayModel(object):
         #  - Clocked logic-blocks
         #
         # Assign an arrival time of -1 to all other blocks.
-        self.arrival_times[:] = -1
-        arrival_times = self.arrival_times[:]
-        arrival_times[adjacency_list.clocked_driver_block_keys] = 0.
-        arrival_times[self.global_block_keys.tolist()] = 0.
-        self.arrival_times[:] = arrival_times
-        del arrival_times
-        self.max_arrival_time = -1
+        self.clocked_driver_block_keys = DeviceVectorInt32.from_array(
+            adjacency_list.clocked_driver_block_keys)
+        self.d_global_block_keys = DeviceVectorInt32.from_array(
+            self.global_block_keys)
 
         # Assign an initial required-time of "infinity" to all blocks.
         self.required_times[:] = 1e7
@@ -166,14 +164,18 @@ class DelayModel(object):
         #
         # In either case, the arrival-time of the block can be set to zero.
         single_connection_blocks = reduced_block_keys[block_net_counts < 2]
+        d_single_connection_blocks = DeviceVectorInt32.from_array(
+            single_connection_blocks)
 
-        arrival_times = self.arrival_times[:]
-        arrival_times[single_connection_blocks] = 0.
-        self.arrival_times[:] = arrival_times
-        del arrival_times
+        fill_arrival_times(self.clocked_driver_block_keys,
+                           self.d_global_block_keys,
+                           d_single_connection_blocks,
+                           self.arrival_times)
+        self.max_arrival_time = -1
+
         self.required_times[single_connection_blocks] = 0.
 
-        self.delay_connections = adjacency_list.sink_connections.copy()
+        self.delay_connections = adjacency_list.sink_connections.sort('block_key')
         self.delay_connections['net_driver_block_key'] = (
             self.net_drivers[self.delay_connections['net_key'].tolist()])
         # Filter connections to only include connections that are not driving
