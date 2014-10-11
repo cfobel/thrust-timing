@@ -97,6 +97,10 @@ class PartitionTimingData(object):
         move_unresolved_data_to_front(self.block_keys,
                                       self.net_driver_block_key,
                                       driver_arrival_time)
+        self.connection_count = N
+        self.block_keys = DeviceVectorInt32.from_array(self.block_keys[:N])
+        self.net_driver_block_key = DeviceVectorInt32.from_array(
+            self.net_driver_block_key[:N])
 
     def partition_numpy(self, driver_arrival_time):
         #self.lengths.append(N)
@@ -325,8 +329,7 @@ class DelayModel(object):
                      ['net_driver_block_key'])]
 
     @profile
-    def _compute_arrival_times(self, arrival_connections, use_thrust=True):
-        self.timing_data.set_connection_data(arrival_connections)
+    def _compute_arrival_times(self):
         ready_count, vectors = (self.timing_data
                                 .compute_connection_arrival_times())
         not_ready_to_calculate = vectors.d_idx[ready_count:]
@@ -345,55 +348,36 @@ class DelayModel(object):
         # block is either zero or positive, all corresponding connection driver
         # arrival-times must be resolved.  In this case, the reduced maximum
         # arrival-time represents the arrival-time for the corresponding block.
-        if use_thrust:
-            print 'using thrust: len(arrival_connections) = ', \
-                len(arrival_connections)
-            _update_arrival_times_thrust(self.timing_data, vectors)
+        #print ('using thrust: connection_count = %d' %
+               #self.timing_data.connection_count)
+        _update_arrival_times_thrust(self.timing_data, vectors)
 
-        # TODO: Migrate away from using Pandas table for arrival_connections,
-        # since the line below contributes ~75% of the run-time of this method.
-        new_connections = arrival_connections.loc[arrival_connections.index
-                                                  [not_ready_to_calculate]]
-        #block_keys_, net_driver_block_key_ = self.timing_data.partition_numpy(
-            #vectors.driver_arrival_time)
-        self.timing_data.partition_thrust(ready_count,
+        self.timing_data.partition_thrust(not_ready_to_calculate.size,
                                           vectors.driver_arrival_time)
-        assert(len(set(self.timing_data.net_driver_block_key
-                       [:not_ready_to_calculate.size]) -
-                   set(new_connections.net_driver_block_key)) == 0)
-        assert(len(set(self.timing_data.block_keys
-                       [:not_ready_to_calculate.size]) -
-                   set(new_connections.block_key)) == 0)
-        return new_connections
 
     @profile
-    def compute_arrival_times(self, name, use_thrust=True):
+    def compute_arrival_times(self, name):
         previous_connection_count = None
-        arrival_connections = self.delay_connections.copy()
-        connection_count = arrival_connections.shape[0]
         self.timing_data = PartitionTimingData(self.block_count,
                                                self.clocked_driver_block_keys,
                                                self.d_global_block_keys,
                                                self.d_single_connection_blocks)
+        self.timing_data.set_connection_data(self.delay_connections)
+        connection_count = self.timing_data.connection_count
 
         i = 0
         while previous_connection_count != connection_count:
-            connection_count = arrival_connections.shape[0]
-            arrival_connections = self._compute_arrival_times(
-                arrival_connections, use_thrust)
-            previous_connection_count = arrival_connections.shape[0]
-            cached = path('%s-i%d-arrival_times.pickled' % (name, i))
-            if use_thrust and cached.isfile():
-                data = pickle.load(cached.open('rb'))
-                if not (data == self.timing_data
-                        .block_arrival_times[:]).all():
-                    import pudb; pudb.set_trace()
-                else:
-                    print ' verified %d' % i
-            elif not use_thrust:
-                #pd.Series(self.arrival_times).to_pickle(cached)
-                #print 'wrote cached arrival times to:', cached
-                pass
+            connection_count = self.timing_data.connection_count
+            self._compute_arrival_times()
+            previous_connection_count = self.timing_data.connection_count
+            #cached = path('%s-i%d-arrival_times.pickled' % (name, i))
+            #if cached.isfile():
+                #data = pickle.load(cached.open('rb'))
+                #if not (data == self.timing_data
+                        #.block_arrival_times[:]).all():
+                    #import pudb; pudb.set_trace()
+                #else:
+                    #print ' verified %d' % i
             i += 1
         self.max_arrival_time = self.timing_data.block_arrival_times[:].max()
         return self.timing_data.block_arrival_times[:]

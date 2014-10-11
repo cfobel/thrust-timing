@@ -28,7 +28,7 @@ from move_pair_thrust.delay_model import DelayModel
 
 
 @profile
-def test(netlist_namebase, use_thrust):
+def test(netlist_namebase):
     netlist_h5f = open_netlists_h5f()
 
     #netlist_namebase = 'clma'
@@ -40,17 +40,21 @@ def test(netlist_namebase, use_thrust):
     netlist_h5f.close()
     delay_model = DelayModel(adjacency_list)
     #import pudb; pudb.set_trace()
-    arrival_times = delay_model.compute_arrival_times(netlist_namebase,
-                                                      use_thrust=use_thrust)
+
+    # TODO: Make one final pass to find the maximum incoming edge delay for
+    # synchronous blocks, since they currently have an arrival time of zero.
+
+    # TODO: Implement departure times calculation (I think this should just
+    # involve swapping role of net_driver_block_key and block_key for each
+    # connection, and using delay_model.clocked_sink_block_keys)
+    arrival_times = delay_model.compute_arrival_times(netlist_namebase)
 
     cached = path('%s-arrival_times.pickled' % netlist_namebase)
-    if use_thrust and cached.isfile():
+    if cached.isfile():
         data = pickle.load(cached.open('rb'))
         assert((data == arrival_times).all())
         print 'verified'
-    elif not use_thrust:
-        pd.Series(arrival_times).to_pickle(cached)
-        print 'wrote cached arrival times to:', cached
+    return adjacency_list, delay_model, arrival_times
 
 
 def parse_args(argv=None):
@@ -61,7 +65,6 @@ def parse_args(argv=None):
         argv = sys.argv
 
     parser = ArgumentParser(description='Compute arrival times for netlist.')
-    parser.add_argument('-d', '--disable-thrust', action='store_true')
     parser.add_argument(dest='net_file_namebase')
 
     args = parser.parse_args()
@@ -70,4 +73,4 @@ def parse_args(argv=None):
 
 if __name__ == '__main__':
     args = parse_args()
-    test(args.net_file_namebase, use_thrust=(not args.disable_thrust))
+    adjacency_list, delay_model, arrival_times = test(args.net_file_namebase)
