@@ -11,9 +11,7 @@ from cythrust.thrust.partition cimport partition_w_stencil
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
                                          plus, minus, reduce_plus4, identity,
-                                         logical_not,
-                                         non_negative
-                                         )
+                                         logical_not, negative)
 from cythrust.thrust.iterator.counting_iterator cimport make_counting_iterator
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
@@ -72,22 +70,23 @@ cpdef resolve_block_arrival_times(size_t unresolved_count,
         make_permutation_iterator(max_arrivals._vector.begin(),
                                   max_arrivals_index._vector.begin()),
         unresolved_count,
-        make_permutation_iterator(arrival_times._vector.begin(),
+        make_permutation_iterator(block_arrival_times._vector.begin(),
                                   block_keys_to_resolve._vector.begin()))
 
 
-cpdef move_resolved_data_to_front(DeviceVectorInt32 block_keys,
-                                  DeviceVectorInt32 net_driver_block_key,
-                                  DeviceVectorFloat32 driver_arrival_time):
+cpdef move_unresolved_data_to_front(DeviceVectorInt32 block_keys,
+                                    DeviceVectorInt32 net_driver_block_key,
+                                    DeviceVectorFloat32 driver_arrival_time):
     '''
     Equivalent to the following, but without temporary intermediate data:
 
-        temp = block_keys[not_ready_to_calculate]
-        temp2 = block_keys[~not_ready_to_calculate]
+        ready_to_calculate = (driver_arrival_time >= 0)
+        temp = block_keys[~ready_to_calculate]
+        temp2 = block_keys[ready_to_calculate]
         block_keys[:len(temp)] = temp
         block_keys[len(temp):] = temp2
     '''
-    cdef non_negative[float] negative
+    cdef negative[float] negative
 
     # result_type operator() (T1 j_is_sync, T2 delay_ij, T3 t_a_j) {
     partition_w_stencil(
@@ -95,6 +94,6 @@ cpdef move_resolved_data_to_front(DeviceVectorInt32 block_keys,
             make_tuple2(block_keys._vector.begin(),
                         net_driver_block_key._vector.begin())),
         make_zip_iterator(
-            make_tuple2(block_keys._vector.begin(),
-                        net_driver_block_key._vector.begin())),
+            make_tuple2(block_keys._vector.end(),
+                        net_driver_block_key._vector.end())),
         driver_arrival_time._vector.begin(), negative)

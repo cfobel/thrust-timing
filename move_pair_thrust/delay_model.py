@@ -17,7 +17,7 @@ from cythrust.device_vector.partition import (
 from cythrust.device_vector.copy import permute_float32, permute_n_int32
 from camip.device.CAMIP import sequence_int32
 from .DELAY_MODEL import (fill_arrival_times, resolve_block_arrival_times,
-                          move_resolved_data_to_front)
+                          move_unresolved_data_to_front)
 
 
 try:
@@ -93,10 +93,24 @@ class PartitionTimingData(object):
         # `_update_arrival_times_thrust`
         # `_compute_arrival_times`
 
-    def partition(self, N, driver_arrival_time):
-        move_resolved_data_to_front(self.block_keys, self.net_driver_block_key,
-                                    driver_arrival_time)
-        self.lengths.append(N)
+    def partition_thrust(self, N, driver_arrival_time):
+        move_unresolved_data_to_front(self.block_keys,
+                                      self.net_driver_block_key,
+                                      driver_arrival_time)
+
+    def partition_numpy(self, driver_arrival_time):
+        #self.lengths.append(N)
+        ready_to_calculate = (driver_arrival_time[:] >= 0)
+        not_ready_count = driver_arrival_time.size - ready_to_calculate.sum()
+        block_keys = np.empty(self.block_keys.size, dtype=np.int32)
+        net_driver_block_key = np.empty_like(block_keys)
+        block_keys[:not_ready_count] = self.block_keys[:][~ready_to_calculate]
+        block_keys[not_ready_count:] = self.block_keys[:][ready_to_calculate]
+        net_driver_block_key[:not_ready_count] = \
+            self.net_driver_block_key[:][~ready_to_calculate]
+        net_driver_block_key[not_ready_count:] = \
+            self.net_driver_block_key[:][ready_to_calculate]
+        return block_keys, net_driver_block_key
 
     @property
     def block_count(self):
@@ -177,9 +191,11 @@ class PartitionTimingData(object):
 
 @profile
 def _update_arrival_times_thrust(timing_data, vectors):
-    sort_float32_by_int32_key(timing_data.block_keys,
+    d_block_keys = DeviceVectorInt32.from_array(timing_data
+                                                .block_keys[:])
+    sort_float32_by_int32_key(d_block_keys,
                               vectors.connection_arrival_time)
-    N_ = minmax_float32_by_key(timing_data.block_keys,
+    N_ = minmax_float32_by_key(d_block_keys,
                                vectors.connection_arrival_time,
                                vectors.reduced_block_keys,
                                vectors.min_arrivals, vectors.max_arrivals)
@@ -309,8 +325,7 @@ class DelayModel(object):
                      ['net_driver_block_key'])]
 
     @profile
-    def _compute_arrival_times(self, arrival_connections, use_thrust=True,
-                               persistent_timing_data=None):
+    def _compute_arrival_times(self, arrival_connections, use_thrust=True):
         self.timing_data.set_connection_data(arrival_connections)
         ready_count, vectors = (self.timing_data
                                 .compute_connection_arrival_times())
@@ -339,7 +354,16 @@ class DelayModel(object):
         # since the line below contributes ~75% of the run-time of this method.
         new_connections = arrival_connections.loc[arrival_connections.index
                                                   [not_ready_to_calculate]]
-        self.timing_data.partition(ready_count, vectors.driver_arrival_time)
+        #block_keys_, net_driver_block_key_ = self.timing_data.partition_numpy(
+            #vectors.driver_arrival_time)
+        self.timing_data.partition_thrust(ready_count,
+                                          vectors.driver_arrival_time)
+        assert(len(set(self.timing_data.net_driver_block_key
+                       [:not_ready_to_calculate.size]) -
+                   set(new_connections.net_driver_block_key)) == 0)
+        assert(len(set(self.timing_data.block_keys
+                       [:not_ready_to_calculate.size]) -
+                   set(new_connections.block_key)) == 0)
         return new_connections
 
     @profile
