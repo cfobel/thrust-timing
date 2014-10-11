@@ -28,13 +28,9 @@ from move_pair_thrust.delay_model import DelayModel
 
 
 @profile
-def test(netlist_namebase):
+def _test_arrival_times(netlist_namebase):
     netlist_h5f = open_netlists_h5f()
 
-    #netlist_namebase = 'clma'
-    #netlist_namebase = 'ex5p'
-    #netlist_namebase = 'uoft_raytracer_low_fanout_latch-1x4lut'
-    #netlist_namebase = 'b19_1_new_mapped-1x4lut'
     netlist_group = getattr(netlist_h5f.root.netlists, netlist_namebase)
     adjacency_list = NetAdjacencyList.from_hdf_group(netlist_group)
     netlist_h5f.close()
@@ -55,6 +51,13 @@ def test(netlist_namebase):
         assert((data == arrival_times).all())
         print 'verified'
     return adjacency_list, delay_model, arrival_times
+
+
+def test_arrival_times():
+    netlists = ['clma', 'ex5p', 'tseng', ]
+
+    for n in netlists:
+        yield _test_arrival_times, n
 
 
 def parse_args(argv=None):
