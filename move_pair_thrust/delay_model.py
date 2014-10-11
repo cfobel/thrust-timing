@@ -321,10 +321,9 @@ class DelayModel(object):
         self.block_count = adjacency_list.connections.block_key.unique().size
 
     @profile
-    def compute_resolved_arrival_times(self, block_arrival_times):
-        ready_count, vectors = (self.timing_data
-                                .compute_connection_arrival_times(
-                                    block_arrival_times))
+    def compute_resolved_arrival_times(self, timing_data, block_arrival_times):
+        ready_count, vectors = (timing_data.compute_connection_arrival_times(
+            block_arrival_times))
         not_ready_to_calculate = vectors.d_idx[ready_count:]
 
         # Reduce the computed connection arrival-times by block-key, to collect
@@ -341,17 +340,17 @@ class DelayModel(object):
         # block is either zero or positive, all corresponding connection driver
         # arrival-times must be resolved.  In this case, the reduced maximum
         # arrival-time represents the arrival-time for the corresponding block.
-        _update_arrival_times_thrust(self.timing_data, vectors,
+        _update_arrival_times_thrust(timing_data, vectors,
                                      block_arrival_times)
 
-        self.timing_data.partition_thrust(not_ready_to_calculate.size,
-                                          vectors.driver_arrival_time)
+        timing_data.partition_thrust(not_ready_to_calculate.size,
+                                     vectors.driver_arrival_time)
 
         # __NB__ The `numpy` equivalent partition method can be run as shown
         # below:
         #
-        #     self.timing_data.partition_numpy(not_ready_to_calculate.size,
-        #                                      vectors.driver_arrival_time)
+        #     timing_data.partition_numpy(not_ready_to_calculate.size,
+        #                                 vectors.driver_arrival_time)
 
     @profile
     def compute_arrival_times(self, name):
@@ -362,15 +361,14 @@ class DelayModel(object):
                            self.single_connection_blocks,
                            block_arrival_times)
 
-        self.timing_data = UnresolvedConnectionEndpoints(self
-                                                         .delay_connections)
+        timing_data = UnresolvedConnectionEndpoints(self.delay_connections)
 
         i = 0
 
         # __NB__ Assuming the input connection data is well-formed, the while
         # loop statement could be:
         #
-        #    while self.timing_data.connection_count > 0:
+        #    while timing_data.connection_count > 0:
         #        ...
         #
         # However, in the case of ill-formed input data, it is possible that
@@ -378,9 +376,10 @@ class DelayModel(object):
         # looping until the number of unresolved connections does not change
         # between iterations.
         unresolved_connection_count = None
-        while self.timing_data.connection_count != unresolved_connection_count:
-            unresolved_connection_count = self.timing_data.connection_count
-            self.compute_resolved_arrival_times(block_arrival_times)
+        while timing_data.connection_count != unresolved_connection_count:
+            unresolved_connection_count = timing_data.connection_count
+            self.compute_resolved_arrival_times(timing_data,
+                                                block_arrival_times)
             i += 1
         self.max_arrival_time = block_arrival_times[:].max()
         #import pudb; pudb.set_trace()
