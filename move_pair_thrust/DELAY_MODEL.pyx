@@ -61,12 +61,12 @@ cpdef fill_arrival_times(DeviceVectorInt32 clocked_driver_block_keys,
 cpdef resolve_block_arrival_times(size_t unresolved_count,
                                   DeviceVectorFloat32 max_arrivals,
                                   DeviceVectorInt32 max_arrivals_index,
-                                  DeviceVectorFloat32 arrival_times,
+                                  DeviceVectorFloat32 block_arrival_times,
                                   DeviceVectorInt32 block_keys_to_resolve):
     '''
     Equivalent to:
 
-        arrival_times[block_keys_to_resolve] = max_arrivals[max_arrivals_index]
+        block_arrival_times[block_keys_to_resolve] = max_arrivals[max_arrivals_index]
     '''
     copy_n(
         make_permutation_iterator(max_arrivals._vector.begin(),
