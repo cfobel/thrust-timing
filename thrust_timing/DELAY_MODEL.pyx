@@ -27,60 +27,61 @@ from cythrust.device_vector cimport DeviceVectorInt32, DeviceVectorFloat32
 cimport cython
 
 
-cpdef fill_arrival_times(DeviceVectorInt32 external_block_keys,
+cpdef fill_longest_paths(DeviceVectorInt32 external_block_keys,
                          DeviceVectorInt32 sync_logic_block_keys,
                          DeviceVectorInt32 single_connection_blocks,
-                         DeviceVectorFloat32 arrival_times):
+                         DeviceVectorFloat32 longest_paths):
     cdef size_t count
 
-    count = arrival_times._vector.size()
+    count = longest_paths._vector.size()
 
-    fill_n(arrival_times._vector.begin(), count, -1)
+    fill_n(longest_paths._vector.begin(), count, -1)
 
     count = sync_logic_block_keys._vector.size()
 
-    fill_n(make_permutation_iterator(arrival_times._vector.begin(),
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
                                      sync_logic_block_keys._vector.begin()),
            count, 0)
 
     count = external_block_keys._vector.size()
 
-    fill_n(make_permutation_iterator(arrival_times._vector.begin(),
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
                                      external_block_keys._vector.begin()),
            count, 0)
 
     count = single_connection_blocks._vector.size()
 
-    fill_n(make_permutation_iterator(arrival_times._vector.begin(),
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
                                      single_connection_blocks._vector.begin()),
            count, 0)
 
 
-cpdef resolve_block_arrival_times(size_t unresolved_count,
-                                  DeviceVectorFloat32 max_arrivals,
-                                  DeviceVectorInt32 max_arrivals_index,
-                                  DeviceVectorFloat32 block_arrival_times,
+cpdef resolve_block_longest_paths(size_t unresolved_count,
+                                  DeviceVectorFloat32 max_longest_path,
+                                  DeviceVectorInt32 max_longest_path_index,
+                                  DeviceVectorFloat32 block_longest_paths,
                                   DeviceVectorInt32 block_keys_to_resolve):
-    '''
+    r'''
     Equivalent to:
 
-        block_arrival_times[block_keys_to_resolve] = max_arrivals[max_arrivals_index]
+        block_longest_paths[block_keys_to_resolve] = \
+            max_longest_path[max_longest_path_index]
     '''
     copy_n(
-        make_permutation_iterator(max_arrivals._vector.begin(),
-                                  max_arrivals_index._vector.begin()),
+        make_permutation_iterator(max_longest_path._vector.begin(),
+                                  max_longest_path_index._vector.begin()),
         unresolved_count,
-        make_permutation_iterator(block_arrival_times._vector.begin(),
+        make_permutation_iterator(block_longest_paths._vector.begin(),
                                   block_keys_to_resolve._vector.begin()))
 
 
 cpdef move_unresolved_data_to_front(DeviceVectorInt32 block_keys,
                                     DeviceVectorInt32 net_driver_block_key,
-                                    DeviceVectorFloat32 driver_arrival_time):
+                                    DeviceVectorFloat32 driver_longest_path):
     '''
     Equivalent to the following, but without temporary intermediate data:
 
-        ready_to_calculate = (driver_arrival_time >= 0)
+        ready_to_calculate = (driver_longest_path >= 0)
         temp = block_keys[~ready_to_calculate]
         temp2 = block_keys[ready_to_calculate]
         block_keys[:len(temp)] = temp
@@ -96,4 +97,4 @@ cpdef move_unresolved_data_to_front(DeviceVectorInt32 block_keys,
         make_zip_iterator(
             make_tuple2(block_keys._vector.end(),
                         net_driver_block_key._vector.end())),
-        driver_arrival_time._vector.begin(), negative)
+        driver_longest_path._vector.begin(), negative)

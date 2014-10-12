@@ -1,11 +1,8 @@
 # coding: utf-8
-import re
 import sys
-import cPickle as pickle
 
 import pandas as pd
 from nose.tools import ok_
-from cyplace_experiments.data import open_netlists_h5f
 from path_helpers import path
 
 
@@ -16,8 +13,7 @@ except:
 
 
 from cyplace_experiments.data.connections_table import ConnectionsTable
-from thrust_timing.delay_model import DelayModel
-
+from thrust_timing.delay_model import DeviceBlockData, LongestPath
 
 @profile
 def _test_arrival_times(netlist_namebase, verify_file=None, save_file=None,
@@ -30,15 +26,20 @@ def _test_arrival_times(netlist_namebase, verify_file=None, save_file=None,
     if save_file is not None and save_file.isfile() and not append:
         raise RuntimeError('Output file exists.  Specify `-a` to append.')
 
-    connections_table = ConnectionsTable(netlist_namebase)
-    delay_model = DelayModel(connections_table)
+    connections_table = ConnectionsTable.from_net_list_name(netlist_namebase)
+    device_netlist_data = DeviceBlockData(connections_table)
 
     # TODO: Implement departure times calculation (I think this should just
     # involve swapping role of net_driver_block_key and block_key for each
     # connection, and using delay_model.clocked_sink_block_keys)
     sink_connections = connections_table.sink_connections().sort('block_key')
-    del connections_table
-    arrival_times = delay_model.compute_arrival_times(sink_connections)
+    #del connections_table
+    longest_path = LongestPath()
+
+    arrival_times = longest_path.compute_arrival_times(device_netlist_data,
+                                                       sink_connections)
+    #departure_times = longest_path.compute_departure_times(device_netlist_data,
+                                                           #sink_connections)
 
     if verify_file is not None:
         data = pd.HDFStore(str(verify_file), 'r')
@@ -51,7 +52,7 @@ def _test_arrival_times(netlist_namebase, verify_file=None, save_file=None,
                                         netlist_namebase, complevel=2,
                                         complib='blosc')
         print 'wrote results to: %s' % save_file
-    delay_model.set_arrival_times(sink_connections, arrival_times[:])
+    device_netlist_data.set_longest_paths(sink_connections, arrival_times[:])
     ok_(sink_connections[(sink_connections.sink_arrival_level <
                           sink_connections.driver_arrival_level)]
            .sync_driver.all())
@@ -59,7 +60,7 @@ def _test_arrival_times(netlist_namebase, verify_file=None, save_file=None,
                                                     .sync_driver]
     ok_((async_driver_connections.sink_arrival_level >=
          async_driver_connections.driver_arrival_level).all())
-    return delay_model, sink_connections, arrival_times
+    return device_netlist_data, sink_connections, arrival_times
 
 
 def test_arrival_times_quick():
@@ -104,6 +105,6 @@ def parse_args(argv=None):
 
 if __name__ == '__main__':
     args = parse_args()
-    delay_model, sink_connections, arrival_times = _test_arrival_times(
+    device_netlist_data, sink_connections, arrival_times = _test_arrival_times(
         args.net_file_namebase, verify_file=args.verify_path,
         save_file=args.save_path, append=args.append)
