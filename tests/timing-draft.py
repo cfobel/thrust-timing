@@ -15,16 +15,8 @@ except:
     profile = lambda (f): f
 
 
-## Arrival time calculation using structured parallel primitives
-
-# ## TODO ##
-#
-#  - Write textual description of algorithm.
-
-# In[2]:
-
-from move_pair_thrust.adjacency_list import NetAdjacencyList
-from move_pair_thrust.delay_model import DelayModel
+from cyplace_experiments.data.connections_table import ConnectionsTable
+from thrust_timing.delay_model import DelayModel
 
 
 @profile
@@ -38,34 +30,36 @@ def _test_arrival_times(netlist_namebase, verify_file=None, save_file=None,
     if save_file is not None and save_file.isfile() and not append:
         raise RuntimeError('Output file exists.  Specify `-a` to append.')
 
-    netlist_h5f = open_netlists_h5f()
-
-    netlist_group = getattr(netlist_h5f.root.netlists, netlist_namebase)
-    adjacency_list = NetAdjacencyList.from_hdf_group(netlist_group)
-    netlist_h5f.close()
-    delay_model = DelayModel(adjacency_list)
-    #import pudb; pudb.set_trace()
-
-    # TODO: Make one final pass to find the maximum incoming edge delay for
-    # synchronous blocks, since they currently have an arrival time of zero.
+    connections_table = ConnectionsTable(netlist_namebase)
+    delay_model = DelayModel(connections_table)
 
     # TODO: Implement departure times calculation (I think this should just
     # involve swapping role of net_driver_block_key and block_key for each
     # connection, and using delay_model.clocked_sink_block_keys)
-    arrival_times = delay_model.compute_arrival_times(netlist_namebase)
+    sink_connections = connections_table.sink_connections().sort('block_key')
+    del connections_table
+    arrival_times = delay_model.compute_arrival_times(sink_connections)
 
     if verify_file is not None:
         data = pd.HDFStore(str(verify_file), 'r')
-        assert((getattr(data.root.arrival_times, netlist_namebase).values[:] ==
-                arrival_times).all())
+        ok_((getattr(data.root, netlist_namebase).arrival_times.values[:] ==
+             arrival_times).all())
         data.close()
         print 'verified'
     elif save_file is not None:
-        pd.Series(arrival_times).to_hdf(str(save_file), '/arrival_times/%s' %
+        pd.Series(arrival_times).to_hdf(str(save_file), '/%s/arrival_times' %
                                         netlist_namebase, complevel=2,
                                         complib='blosc')
         print 'wrote results to: %s' % save_file
-    return adjacency_list, delay_model, arrival_times
+    delay_model.set_arrival_times(sink_connections, arrival_times[:])
+    ok_(sink_connections[(sink_connections.sink_arrival_level <
+                          sink_connections.driver_arrival_level)]
+           .sync_driver.all())
+    async_driver_connections = sink_connections.loc[~sink_connections
+                                                    .sync_driver]
+    ok_((async_driver_connections.sink_arrival_level >=
+         async_driver_connections.driver_arrival_level).all())
+    return delay_model, sink_connections, arrival_times
 
 
 def test_arrival_times_quick():
@@ -82,7 +76,7 @@ def test_arrival_times_full():
                                                    'arrival_times.dat')
 
     h5f = pd.HDFStore(str(fixtures_path), 'r')
-    names = h5f.root.arrival_times._v_children.keys()
+    names = h5f.root._v_children.keys()
     h5f.close()
     for name in names:
         yield _test_arrival_times, name, fixtures_path
@@ -110,6 +104,6 @@ def parse_args(argv=None):
 
 if __name__ == '__main__':
     args = parse_args()
-    adjacency_list, delay_model, arrival_times = _test_arrival_times(
+    delay_model, sink_connections, arrival_times = _test_arrival_times(
         args.net_file_namebase, verify_file=args.verify_path,
         save_file=args.save_path, append=args.append)

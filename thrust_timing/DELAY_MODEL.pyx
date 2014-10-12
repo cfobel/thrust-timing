@@ -27,8 +27,8 @@ from cythrust.device_vector cimport DeviceVectorInt32, DeviceVectorFloat32
 cimport cython
 
 
-cpdef fill_arrival_times(DeviceVectorInt32 clocked_driver_block_keys,
-                         DeviceVectorInt32 global_block_keys,
+cpdef fill_arrival_times(DeviceVectorInt32 external_block_keys,
+                         DeviceVectorInt32 sync_logic_block_keys,
                          DeviceVectorInt32 single_connection_blocks,
                          DeviceVectorFloat32 arrival_times):
     cdef size_t count
@@ -37,17 +37,17 @@ cpdef fill_arrival_times(DeviceVectorInt32 clocked_driver_block_keys,
 
     fill_n(arrival_times._vector.begin(), count, -1)
 
-    count = clocked_driver_block_keys._vector.size()
+    count = sync_logic_block_keys._vector.size()
 
     fill_n(make_permutation_iterator(arrival_times._vector.begin(),
-                                     clocked_driver_block_keys._vector.begin()),
+                                     sync_logic_block_keys._vector.begin()),
            count, 0)
 
-    count = global_block_keys._vector.size()
+    count = external_block_keys._vector.size()
 
     fill_n(make_permutation_iterator(arrival_times._vector.begin(),
-                                     global_block_keys._vector.begin()), count,
-           0)
+                                     external_block_keys._vector.begin()),
+           count, 0)
 
     count = single_connection_blocks._vector.size()
 

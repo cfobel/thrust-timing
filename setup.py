@@ -8,7 +8,7 @@ import pkg_resources
 import version
 
 
-pyx_files = ['move_pair_thrust/DELAY_MODEL.pyx']
+pyx_files = ['thrust_timing/DELAY_MODEL.pyx']
 ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                          extra_compile_args=['-O3', '-msse3', '-std=c++0x'],
                          include_dirs=['camip',
@@ -22,7 +22,7 @@ ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                for f in pyx_files]
 
 
-setup(name='move_pair_thrust',
+setup(name='thrust-timing',
       version=version.getVersion(),
       description='Thrust FPGA timing calculations',
       keywords='fpga timing thrust',
@@ -31,4 +31,5 @@ setup(name='move_pair_thrust',
       #url='http://github.com/wheeler-microfluidics/microdrop_utility.git',
       license='GPL',
       install_requires=['pandas', 'numpy', 'scipy'],
+      packages=['thrust_timing'],
       ext_modules=cythonize(ext_modules))

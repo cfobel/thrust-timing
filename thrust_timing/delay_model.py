@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+
 from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
 from cythrust.device_vector.extrema import minmax_float32_by_key
 from cythrust.device_vector.sort import sort_float32_by_int32_key, sort_int32
@@ -104,22 +106,22 @@ class UnresolvedConnectionEndpoints(object):
          arrival times _(i.e., "delay levels")_ after computing the arrival
          times according to each connection having a delay of 1.
     '''
-    def __init__(self, arrival_connections):
-        self.set_connection_data(arrival_connections)
+    def __init__(self, sink_connections):
+        self.set_connection_data(sink_connections)
 
-    def set_connection_data(self, arrival_connections):
+    def set_connection_data(self, sink_connections):
         '''
         Load initial connection data from a `pandas.DataFrame` instance with the following
         columns:
 
          - `block_key`: The key of the sink block of each connection.
-         - `net_driver_block_key`: The key of the driver block of each connection.
+         - `driver_block_key`: The key of the driver block of each connection.
         '''
-        self.connection_count = len(arrival_connections)
-        self.block_keys = DeviceVectorInt32.from_array(arrival_connections
+        self.connection_count = len(sink_connections)
+        self.block_keys = DeviceVectorInt32.from_array(sink_connections
                                                        .block_key.values)
-        self.net_driver_block_key = DeviceVectorInt32.from_array(
-            arrival_connections.net_driver_block_key.values)
+        self.driver_block_key = DeviceVectorInt32.from_array(
+            sink_connections.driver_block_key.values)
 
     def partition_thrust(self, N, driver_arrival_time):
         '''
@@ -131,12 +133,12 @@ class UnresolvedConnectionEndpoints(object):
         each level iteration of arrival times calculation.
         '''
         move_unresolved_data_to_front(self.block_keys,
-                                      self.net_driver_block_key,
+                                      self.driver_block_key,
                                       driver_arrival_time)
         self.connection_count = N
         self.block_keys = DeviceVectorInt32.from_array(self.block_keys[:N])
-        self.net_driver_block_key = DeviceVectorInt32.from_array(
-            self.net_driver_block_key[:N])
+        self.driver_block_key = DeviceVectorInt32.from_array(
+            self.driver_block_key[:N])
 
     def partition_numpy(self, not_ready_count, driver_arrival_time):
         '''
@@ -146,8 +148,8 @@ class UnresolvedConnectionEndpoints(object):
         self.connection_count = not_ready_count
         self.block_keys = DeviceVectorInt32.from_array(
             self.block_keys[:][~ready_to_calculate])
-        self.net_driver_block_key = DeviceVectorInt32.from_array(
-            self.net_driver_block_key[:][~ready_to_calculate])
+        self.driver_block_key = DeviceVectorInt32.from_array(
+            self.driver_block_key[:][~ready_to_calculate])
 
     def compute_connection_arrival_times(self, block_arrival_times):
         vectors = LevelTimingData(self.connection_count,
@@ -158,8 +160,8 @@ class UnresolvedConnectionEndpoints(object):
         #
         # Equivalent to:
         #
-        #     vectors.driver_arrival_time = block_arrival_times[self.net_driver_block_key]
-        permute_float32(block_arrival_times, self.net_driver_block_key,
+        #     vectors.driver_arrival_time = block_arrival_times[self.driver_block_key]
+        permute_float32(block_arrival_times, self.driver_block_key,
                         vectors.driver_arrival_time)
 
         # Create mask, d_fining which connections are _not_ ready for
@@ -257,12 +259,10 @@ def _update_arrival_times_thrust(timing_data, vectors, block_arrival_times):
 
 class DelayModel(object):
     CLOCK_PIN = 5
+    LOGIC_BLOCK = 0
 
     @profile
-    def __init__(self, adjacency_list, delay=unit_delay):
-        self.net_drivers = (adjacency_list.driver_connections.block_key
-                            .unique())
-
+    def __init__(self, connections_table, delay=unit_delay):
         # ## Identify all level zero blocks ##
         #
         # We need to identify the following blocks, since they must be assigned
@@ -273,52 +273,22 @@ class DelayModel(object):
         #  - Clock drivers
         #
         # The keys of input and clocked logic-blocks are available as the
-        # `clocked_driver_block_keys` attribute of the provided
-        # `adjacency_list`.
+        # `input_block_keys` and `sync_logic_block_keys` methods of the
+        # provided `connections_table`, which is an instance of the class
+        # `cyplace_experiments.data.connections_table.ConnectionsTable`.
         #
         # All other blocks must be assigned an arrival time of -1.
-        self.clocked_driver_block_keys = DeviceVectorInt32.from_array(
-            adjacency_list.clocked_driver_block_keys)
-
-        connections = adjacency_list.connections
-        global_block_keys = (self.net_drivers
-                             [connections[connections.pin_key ==
-                                          self.CLOCK_PIN].net_key.unique()])
-        self.global_block_keys = DeviceVectorInt32.from_array(
-            global_block_keys)
-        del connections
-        del global_block_keys
-
-        # ### Blocks with only one connection ###
-        #
-        # Some net-lists _(e.g. `clma`)_ have at least one logic block that is
-        # only connected to a single net.  For each such block, either:
-        #
-        #  - The block has no inputs, so must be a constant-generator.
-        #  - The block has no output, so is equivalent to no block at all.
-        #
-        # In either case, the block should have no impact on timing, so the
-        # arrival-time of the block can be set to zero.
-        block_keys = DeviceVectorInt32.from_array(
-            adjacency_list.connections.loc[adjacency_list.connections
-                                           .block_type_key == 0].block_key
-            .as_matrix())
-        sort_int32(block_keys)
-
-        reduced_block_keys = DeviceVectorInt32(block_keys.size)
-        block_net_counts = DeviceVectorInt32(block_keys.size)
-        N = count_int32_key(block_keys, reduced_block_keys, block_net_counts)
-        block_net_counts = block_net_counts[:N]
-        reduced_block_keys = reduced_block_keys[:N]
-
-        single_connection_blocks = reduced_block_keys[block_net_counts < 2]
+        self.input_block_keys = DeviceVectorInt32.from_array(
+            connections_table.input_block_keys())
+        self.output_block_keys = DeviceVectorInt32.from_array(
+            connections_table.output_block_keys())
+        self.sync_logic_block_keys = DeviceVectorInt32.from_array(
+            connections_table.sync_logic_block_keys())
+        # Logic blocks that only have a single connection, either an input or
+        # an output.
         self.single_connection_blocks = DeviceVectorInt32.from_array(
-            single_connection_blocks)
-
-        self.delay_connections = adjacency_list.sink_connections.copy()
-        self.delay_connections['net_driver_block_key'] = (
-            self.net_drivers[self.delay_connections.net_key.values])
-        self.block_count = adjacency_list.connections.block_key.unique().size
+            connections_table.single_connection_blocks)
+        self.block_count = connections_table.block_count
 
     @profile
     def compute_resolved_arrival_times(self, timing_data, block_arrival_times):
@@ -353,15 +323,13 @@ class DelayModel(object):
         #                                 vectors.driver_arrival_time)
 
     @profile
-    def compute_arrival_times(self, name):
-        previous_connection_count = None
+    def compute_arrival_times(self, connections):
         block_arrival_times = DeviceVectorFloat32(self.block_count)
-        fill_arrival_times(self.clocked_driver_block_keys,
-                           self.global_block_keys,
-                           self.single_connection_blocks,
-                           block_arrival_times)
+        fill_arrival_times(self.input_block_keys,
+                           self.sync_logic_block_keys,
+                           self.single_connection_blocks, block_arrival_times)
 
-        timing_data = UnresolvedConnectionEndpoints(self.delay_connections)
+        timing_data = UnresolvedConnectionEndpoints(connections)
 
         i = 0
 
@@ -381,6 +349,37 @@ class DelayModel(object):
             self.compute_resolved_arrival_times(timing_data,
                                                 block_arrival_times)
             i += 1
-        self.max_arrival_time = block_arrival_times[:].max()
-        #import pudb; pudb.set_trace()
+        assert(timing_data.connection_count == 0)
+
+        # Make one final pass to find the maximum incoming edge delay for
+        # synchronous blocks, since they currently have an arrival time of
+        # zero.
+        # TODO: Use Thrust to perform this reduction.
+        connections['driver_arrival_level'] = \
+            block_arrival_times[:][connections.driver_block_key.values]
+        sync_block_arrival_times = (connections[connections.block_key
+                                                .isin(self
+                                                      .sync_logic_block_keys[:]
+                                                      )]
+                                    .groupby(['block_key'])
+                                    .agg({'driver_arrival_level': np.max})) + 1
+        _block_arrival_times = block_arrival_times[:]
+        _block_arrival_times[sync_block_arrival_times.index] = sync_block_arrival_times.values
+        block_arrival_times[:] = _block_arrival_times
+
         return block_arrival_times[:]
+
+    def set_arrival_times(self, connections, block_arrival_times):
+        '''
+        Populate columns on the provided connections based on the supplied
+        arrival times.
+        '''
+        pd.set_option('line_width', 200)
+        connections['sync_driver'] = \
+            connections.driver_block_key.isin(self.sync_logic_block_keys[:])
+        connections['sync_sink'] = \
+            connections.block_key.isin(self.sync_logic_block_keys[:])
+        connections['driver_arrival_level'] = \
+            block_arrival_times[connections.driver_block_key.values]
+        connections['sink_arrival_level'] = \
+            block_arrival_times[connections.block_key.values]
