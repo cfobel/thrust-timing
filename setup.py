@@ -8,7 +8,7 @@ import pkg_resources
 import version
 
 
-pyx_files = ['thrust_timing/DELAY_MODEL.pyx']
+pyx_files = ['thrust_timing/DELAY_MODEL.pyx', 'thrust_timing/SORT_TIMING.pyx']
 ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                          extra_compile_args=['-O3', '-msse3', '-std=c++0x'],
                          include_dirs=['camip',
