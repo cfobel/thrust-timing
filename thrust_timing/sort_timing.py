@@ -82,13 +82,12 @@ def prepare_device_timing_data(connections_table, source):
 
     # Mark whether or not each source/target block is a synchronous logic
     # block.
-    block_is_sync = pd.Series(np.zeros(connections_table.block_count,
-                                       dtype=np.uint8))
+    block_is_sync = np.zeros(connections_table.block_count, dtype=np.uint8)
     block_is_sync[connections_table.sync_logic_block_keys()] = True
 
     # Initialize constant values.
-    connections['sync_source'] = block_is_sync[connections.source_key].values
-    connections['sync_target'] = block_is_sync[connections.target_key].values
+    connections['sync_source'] = block_is_sync[connections.source_key.values]
+    connections['sync_target'] = block_is_sync[connections.target_key.values]
 
     d_connections = DeviceDataFrame(connections)
     d_connections.add('delay', dtype=np.float32)
