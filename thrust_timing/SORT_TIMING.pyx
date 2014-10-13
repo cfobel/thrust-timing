@@ -261,3 +261,34 @@ def step10(DeviceVectorViewFloat32 block_min_source_longest_path,
     #     longest_paths[max_target_longest_path.index] = max_target_longest_path.values
     copy_n(max_target_longest_path._begin, resolved_block_count,
            make_permutation_iterator(longest_paths._begin, reduced_keys._begin))
+
+
+cpdef fill_longest_paths(DeviceVectorViewInt32 external_block_keys,
+                         DeviceVectorViewInt32 sync_logic_block_keys,
+                         DeviceVectorViewInt32 single_connection_blocks,
+                         DeviceVectorViewFloat32 longest_paths):
+    cdef size_t count
+
+    count = longest_paths._vector.size()
+
+    fill_n(longest_paths._vector.begin(), count, -1)
+
+    count = sync_logic_block_keys._vector.size()
+
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
+                                     sync_logic_block_keys._vector.begin()),
+           count, 0)
+
+    count = external_block_keys._vector.size()
+
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
+                                     external_block_keys._vector.begin()),
+           count, 0)
+
+    count = single_connection_blocks._vector.size()
+
+    fill_n(make_permutation_iterator(longest_paths._vector.begin(),
+                                     single_connection_blocks._vector.begin()),
+           count, 0)
+
+
