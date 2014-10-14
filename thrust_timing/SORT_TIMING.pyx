@@ -12,7 +12,7 @@ from cythrust.thrust.fill cimport fill_n, fill
 from cythrust.thrust.transform cimport transform2
 from cythrust.thrust.iterator.constant_iterator cimport make_constant_iterator
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
-from cythrust.thrust.reduce cimport reduce_by_key, reduce
+from cythrust.thrust.reduce cimport reduce_by_key, reduce, accumulate_by_key
 from cythrust.thrust.functional cimport (positive, non_negative, minimum,
                                          equal_to, plus, maximum, absolute,
                                          unpack_binary_args, minus,
@@ -473,3 +473,44 @@ def connection_cost(float criticality_exp,
         cost._begin)
 
     return critical_path
+
+
+def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
+                            DeviceVectorViewFloat32 arrival_cost,
+                            DeviceVectorViewInt32 departure_target_key,
+                            DeviceVectorViewFloat32 departure_cost,
+                            DeviceVectorViewInt32 arrival_reduced_keys,
+                            DeviceVectorViewInt32 departure_reduced_keys,
+                            DeviceVectorViewFloat32
+                            arrival_reduced_target_cost,
+                            DeviceVectorViewFloat32
+                            departure_reduced_target_cost,
+                            DeviceVectorViewFloat32
+                            block_arrival_cost,
+                            DeviceVectorViewFloat32
+                            block_departure_cost):
+    cdef size_t arrival_block_count = (
+        <device_vector[int32_t].iterator>
+        accumulate_by_key(arrival_target_key._begin, arrival_target_key._end,
+                          arrival_cost._begin, arrival_reduced_keys._begin,
+                          arrival_reduced_target_cost._begin).first -
+        arrival_reduced_keys._begin)
+
+    cdef size_t departure_block_count = (
+        <device_vector[int32_t].iterator>
+        accumulate_by_key(departure_target_key._begin,
+                          departure_target_key._end, departure_cost._begin,
+                          departure_reduced_keys._begin,
+                          departure_reduced_target_cost._begin).first -
+        departure_reduced_keys._begin)
+
+    copy_n(
+        arrival_reduced_target_cost._begin, arrival_block_count,
+        make_permutation_iterator(block_arrival_cost._begin,
+                                  arrival_reduced_keys._begin))
+    copy_n(
+        departure_reduced_target_cost._begin, departure_block_count,
+        make_permutation_iterator(block_departure_cost._begin,
+                                  departure_reduced_keys._begin))
+
+    return arrival_block_count, departure_block_count
