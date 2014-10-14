@@ -5,16 +5,18 @@ from cython.operator cimport dereference as deref
 from cythrust.thrust.device_vector cimport device_vector
 from cythrust.thrust.partition cimport (counted_stable_partition,
                                         counted_stable_partition_w_stencil)
+from cythrust.thrust.extrema cimport max_element
 from cythrust.thrust.sort cimport sort_by_key
 from cythrust.thrust.scatter cimport scatter
 from cythrust.thrust.fill cimport fill_n, fill
 from cythrust.thrust.transform cimport transform2
+from cythrust.thrust.iterator.constant_iterator cimport make_constant_iterator
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
-from cythrust.thrust.reduce cimport reduce_by_key
+from cythrust.thrust.reduce cimport reduce_by_key, reduce
 from cythrust.thrust.functional cimport (positive, non_negative, minimum,
                                          equal_to, plus, maximum, absolute,
                                          unpack_binary_args, minus,
-                                         unpack_ternary_args)
+                                         unpack_ternary_args, divides)
 from cythrust.thrust.tuple cimport (make_tuple2, make_tuple3, make_tuple4,
                                     make_tuple5, make_tuple6, make_tuple7)
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
@@ -30,6 +32,9 @@ from cythrust.thrust.replace cimport replace_if_w_stencil
 cdef extern from "delay.h" nogil:
     cdef cppclass timing_delay 'delay' [T]:
         timing_delay(T, int32_t, int32_t)
+
+    cdef cppclass c_connection_criticality 'connection_criticality' [T]:
+        c_connection_criticality(T)
 
 
 def sort_by_target_key(DeviceVectorViewInt32 source_key,
@@ -257,8 +262,6 @@ cpdef look_up_delay(DeviceVectorViewInt32 source_key,
                     DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_y,
                     DeviceVectorViewFloat32 arch_delays,
                     int32_t nrows, int32_t ncols,
-                    DeviceVectorViewInt32 delta_x,
-                    DeviceVectorViewInt32 delta_y,
                     DeviceVectorViewFloat32 delay):
     cdef size_t count = source_key.size
     cdef absolute[int32_t] abs_func
@@ -273,40 +276,7 @@ cpdef look_up_delay(DeviceVectorViewInt32 source_key,
         unpack_ternary_args[timing_delay[device_vector[float].iterator]]\
         (deref(delay_f))
 
-    # Compute `delta_x` and `delta_y`.
-    # Equivalent to:
-    #
-    #     delta_x = np.abs(p_x[source_key] - p_x[target_key])
-    #     delta_y = np.abs(p_y[source_key] - p_y[target_key])
-    copy_n(
-        make_zip_iterator(
-            make_tuple2(
-                make_transform_iterator(
-                    make_transform_iterator(
-                        make_zip_iterator(
-                            make_tuple2(
-                                make_permutation_iterator(
-                                    p_x._begin,
-                                    source_key._begin),
-                                make_permutation_iterator(
-                                    p_x._begin,
-                                    target_key._begin))),
-                        deref(unpacked_minus)), abs_func),
-                make_transform_iterator(
-                    make_transform_iterator(
-                        make_zip_iterator(
-                            make_tuple2(
-                                make_permutation_iterator(
-                                    p_y._begin,
-                                    source_key._begin),
-                                make_permutation_iterator(
-                                    p_y._begin,
-                                    target_key._begin))),
-                        deref(unpacked_minus)), abs_func))),
-        count, make_zip_iterator(make_tuple2(delta_x._begin,
-                                             delta_y._begin)))
-
-    # Compute `delta_x` and `delta_y`.
+    # Compute `delay`
     # Equivalent to:
     #
     #     delay = timing_delay(np.abs(p_x[source_key] - p_x[target_key]),
@@ -342,3 +312,101 @@ cpdef look_up_delay(DeviceVectorViewInt32 source_key,
     del unpacked_minus
     del delay_f
     del unpacked_delay
+
+
+cpdef look_up_delay_prime(DeviceVectorViewInt32 source_key,
+                    DeviceVectorViewInt32 target_key,
+                    DeviceVectorViewUint8 delay_type,
+                    DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_y,
+                    DeviceVectorViewInt32 p_x_prime, DeviceVectorViewInt32 p_y_prime,
+                    DeviceVectorViewFloat32 arch_delays,
+                    int32_t nrows, int32_t ncols,
+                    DeviceVectorViewFloat32 delay):
+    cdef size_t count = source_key.size
+    cdef absolute[int32_t] abs_func
+    cdef minus[int32_t] minus_func
+    cdef unpack_binary_args[minus[int32_t]] *unpacked_minus = \
+        new unpack_binary_args[minus[int32_t]](minus_func)
+    cdef timing_delay[device_vector[float].iterator] *delay_f = \
+        new timing_delay[device_vector[float].iterator](arch_delays._begin,
+                                                        nrows, ncols)
+    cdef unpack_ternary_args[timing_delay[device_vector[float].iterator]] \
+        *unpacked_delay = new \
+        unpack_ternary_args[timing_delay[device_vector[float].iterator]]\
+        (deref(delay_f))
+
+    # Compute `delay`
+    # Equivalent to:
+    #
+    #     delay = timing_delay(np.abs(p_x[source_key] - p_x_prime[target_key]),
+    #                          np.abs(p_y[source_key] - p_y_prime[target_key]))
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple3(
+                    delay_type._begin,
+                    make_transform_iterator(
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_x._begin,
+                                        source_key._begin),
+                                    make_permutation_iterator(
+                                        p_x_prime._begin,
+                                        target_key._begin))),
+                            deref(unpacked_minus)), abs_func),
+                    make_transform_iterator(
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_y._begin,
+                                        source_key._begin),
+                                    make_permutation_iterator(
+                                        p_y_prime._begin,
+                                        target_key._begin))),
+                            deref(unpacked_minus)), abs_func))),
+            deref(unpacked_delay)), count, delay._begin)
+    del unpacked_minus
+    del delay_f
+    del unpacked_delay
+
+
+def connection_criticality(DeviceVectorViewFloat32 delay,
+                           DeviceVectorViewFloat32 arrival_times,
+                           DeviceVectorViewFloat32 departure_times,
+                           DeviceVectorViewInt32 driver_key,
+                           DeviceVectorViewInt32 sink_key,
+                           DeviceVectorViewFloat32 criticality):
+    cdef maximum[float] maximum_f
+
+    cdef float critical_path = deref(max_element(arrival_times._begin,
+                                                 arrival_times._end))
+
+    cdef c_connection_criticality[float] *connection_criticality_f = \
+        new c_connection_criticality[float](critical_path)
+    cdef unpack_ternary_args[c_connection_criticality[float]] \
+        *unpacked_connection_criticality = \
+        new unpack_ternary_args[c_connection_criticality[float]] \
+        (deref(connection_criticality_f))
+
+    # Equivalent to:
+    #
+    #     a.v['criticality'][:] = ((self._arrival_times[a['source_key'].values] +
+    #                                 a['delay'] +
+    #                                 self._departure_times[a['target_key'].values])
+    #                                 / self.critical_path)
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple3(
+                    delay._begin,
+                    make_permutation_iterator(arrival_times._begin,
+                                              driver_key._begin),
+                    make_permutation_iterator(departure_times._begin,
+                                              sink_key._begin))),
+            deref(unpacked_connection_criticality)), delay._vector.size(),
+        criticality._begin)
+
+    return critical_path
