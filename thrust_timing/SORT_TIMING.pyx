@@ -36,6 +36,9 @@ cdef extern from "delay.h" nogil:
     cdef cppclass c_connection_criticality 'connection_criticality' [T]:
         c_connection_criticality(T)
 
+    cdef cppclass c_connection_cost 'connection_cost' [T]:
+        c_connection_cost(T, T)
+
 
 def sort_by_target_key(DeviceVectorViewInt32 source_key,
                        DeviceVectorViewInt32 target_key,
@@ -401,12 +404,72 @@ def connection_criticality(DeviceVectorViewFloat32 delay,
         make_transform_iterator(
             make_zip_iterator(
                 make_tuple3(
-                    delay._begin,
                     make_permutation_iterator(arrival_times._begin,
                                               driver_key._begin),
+                    delay._begin,
                     make_permutation_iterator(departure_times._begin,
                                               sink_key._begin))),
             deref(unpacked_connection_criticality)), delay._vector.size(),
         criticality._begin)
+
+    return critical_path
+
+
+def connection_cost(float criticality_exp,
+                    DeviceVectorViewFloat32 delay,
+                    DeviceVectorViewFloat32 arrival_times,
+                    DeviceVectorViewFloat32 departure_times,
+                    DeviceVectorViewInt32 driver_key,
+                    DeviceVectorViewInt32 sink_key,
+                    DeviceVectorViewFloat32 cost, 
+                    float critical_path=-1):
+    '''
+    Compute the cost of each connection.  The result is equivalent to the
+    following:
+
+        criticality = ((arrival_times[target_key] + delay +
+                        departure_times[source_key]) / critical_path)
+        cost = ((criticality ** criticality_exp) * delay)
+
+    where:
+
+     - `arrival_times`, `delay`, and `departure_times` are arrays, with one
+       entry per connection.
+     - `criticality_exp` is the maximum delay of any path in the circuit.  This
+       should be equivalent to the maximum arrival _(or departure)_ time.
+     - `criticality_exp` is a normalizing exponent term.  The higher the
+       exponent, the lower the resulting calculation, since the value under the
+       exponent is always less than or equal to one.
+    '''
+    cdef maximum[float] maximum_f
+
+    if critical_path < 0:
+        critical_path = deref(max_element(arrival_times._begin,
+                                          arrival_times._end))
+
+    cdef c_connection_cost[float] *connection_cost_f = \
+        new c_connection_cost[float](critical_path, criticality_exp)
+    cdef unpack_ternary_args[c_connection_cost[float]] \
+        *unpacked_connection_cost = \
+        new unpack_ternary_args[c_connection_cost[float]] \
+        (deref(connection_cost_f))
+
+    # Equivalent to:
+    #
+    #     a.v['criticality'][:] = ((self._arrival_times[a['source_key'].values] +
+    #                                 a['delay'] +
+    #                                 self._departure_times[a['target_key'].values])
+    #                                 / self.critical_path)
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple3(
+                    make_permutation_iterator(arrival_times._begin,
+                                              driver_key._begin),
+                    delay._begin,
+                    make_permutation_iterator(departure_times._begin,
+                                              sink_key._begin))),
+            deref(unpacked_connection_cost)), delay._vector.size(),
+        cost._begin)
 
     return critical_path
