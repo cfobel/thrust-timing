@@ -15,7 +15,7 @@ from cyplace_experiments.data import open_netlists_h5f
 import numpy as np
 import pandas as pd
 
-pd.set_option('line_width', 300)
+pd.set_option('display.width', 300)
 
 
 try:

@@ -8,7 +8,7 @@ from thrust_timing.sort_timing import compute_arrival_times, compute_departure_t
 import numpy as np
 import pandas as pd
 
-pd.set_option('line_width', 300)
+pd.set_option('display.width', 300)
 
 
 def test_simple_netlist():

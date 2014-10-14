@@ -288,7 +288,7 @@ class DeviceBlockData(object):
         Populate columns on the provided connections based on the supplied
         longest paths.
         '''
-        pd.set_option('line_width', 200)
+        pd.set_option('display.width', 200)
         if source == CONNECTION_DRIVER:
             label = 'arrival'
         else:
