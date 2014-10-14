@@ -14,9 +14,11 @@ pd.set_option('line_width', 300)
 def test_simple_netlist():
     connections_table, arrival_times, departure_times =  get_simple_net_list()
 
-    block_data, connections = compute_arrival_times(connections_table)
+    special_blocks, block_data, connections = \
+        compute_arrival_times(connections_table)
     _arrival_times = block_data['longest_paths'].values
-    block_data, connections = compute_departure_times(connections_table)
+    special_blocks, block_data, connections = \
+        compute_departure_times(connections_table)
     _departure_times = block_data['longest_paths'].values
 
     np.testing.assert_array_equal(_arrival_times, arrival_times)
@@ -26,9 +28,11 @@ def test_simple_netlist():
 def _test_net_list_by_name(net_list_name):
     connections_table = ConnectionsTable.from_net_list_name(net_list_name)
 
-    block_data, connections = compute_arrival_times(connections_table)
+    special_blocks, block_data, connections = \
+        compute_arrival_times(connections_table)
     arrival_times = block_data['longest_paths'].values
-    block_data, connections = compute_departure_times(connections_table)
+    special_blocks, block_data, connections = \
+        compute_departure_times(connections_table)
     departure_times = block_data['longest_paths'].values
     np.testing.assert_array_equal(arrival_times[connections_table
                                                 .input_block_keys()], 0)

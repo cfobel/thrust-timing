@@ -3,8 +3,9 @@ from thrust_timing.SORT_TIMING import fill_longest_paths
 from cythrust import DeviceDataFrame, DeviceVectorCollection
 from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
                                                         CONNECTION_SINK)
-from .SORT_TIMING import (step1, step2, step3, step4, step5, step6, step7,
-                          step8, step9, step10, sort_by_target_key)
+from .SORT_TIMING import (reset_block_min_source_longest_path, step1, step2,
+                          step3, step4, step5, step6, step7, step8, step9,
+                          step10, sort_by_target_key)
 
 
 import numpy as np
@@ -48,8 +49,8 @@ def prepare_device_timing_data(connections_table, source):
        - `CONNECTION_SINK`: Sink blocks are treated as the source _(departure
          times)_.
     '''
-    source_label = 'driver_block_key'
-    target_label = 'block_key'
+    source_label = 'driver_key'
+    target_label = 'sink_key'
     external_blocks = 'input_block_keys'
 
     if source != CONNECTION_DRIVER:
@@ -74,9 +75,8 @@ def prepare_device_timing_data(connections_table, source):
 
     connections = connections_table.sink_connections()[[source_label,
                                                         target_label]]
-    connections.driver_block_key = (connections.driver_block_key.values
-                                    .astype(np.int32))
-    connections.block_key = connections.block_key.values.astype(np.int32)
+    for label in (source_label, target_label):
+        connections[label] = connections[label].values.astype(np.int32)
     connections.rename(columns={source_label: 'source_key',
                                 target_label: 'target_key'}, inplace=True)
 
@@ -109,7 +109,8 @@ def reset_timing_data(d_special_blocks, d_block_data, v_connections):
 
     v_connections.v['delay'][:] = init_value
     v_connections.v['target_longest_path'][:] = init_value
-    v_connections.v['min_source_longest_path'][:] = init_value
+    if 'min_source_longest_path' in v_connections.v:
+        v_connections.v['min_source_longest_path'][:] = init_value
 
     fill_longest_paths(d_special_blocks.v['external_block_keys'],
                        d_special_blocks.v['sync_logic_block_keys'],
@@ -122,8 +123,9 @@ def compute_departure_times(connections_table):
     d_special_blocks, d_block_data, v_connections = prepare_device_timing_data(
         connections_table, CONNECTION_SINK)
     reset_timing_data(d_special_blocks, d_block_data, v_connections)
-    result = compute_longest_target_paths(d_block_data, v_connections)
-    return result
+    d_block_data, views = compute_longest_target_paths(d_block_data,
+                                                       v_connections)
+    return d_special_blocks, d_block_data, views
 
 
 @profile
@@ -131,14 +133,16 @@ def compute_arrival_times(connections_table):
     d_special_blocks, d_block_data, v_connections = prepare_device_timing_data(
         connections_table, CONNECTION_DRIVER)
     reset_timing_data(d_special_blocks, d_block_data, v_connections)
-    result = compute_longest_target_paths(d_block_data, v_connections)
-    return result
+    d_block_data, views = compute_longest_target_paths(d_block_data,
+                                                       v_connections)
+    return d_special_blocks, d_block_data, views
 
 
 @profile
 def do_iteration(d_block_data, v_connections):
-    step1(d_block_data.v['min_source_longest_path'],
-          d_block_data.v['longest_paths'], v_connections.v['source_key'],
+    reset_block_min_source_longest_path(
+        d_block_data.v['min_source_longest_path'])
+    step1(d_block_data.v['longest_paths'], v_connections.v['source_key'],
           v_connections.v['source_longest_path'])
     step2(v_connections.v['sync_source'],
           v_connections.v['source_longest_path'])
@@ -196,7 +200,8 @@ def compute_longest_target_paths(d_block_data, v_connections):
     while resolved_block_count > 0:
         unique_block_count, ready_connection_count, resolved_block_count = \
             do_iteration(d_block_data, v_connections)
-        views.append(v_connections)
+        if v_connections.size > 0:
+            views.append(v_connections.view(0, ready_connection_count))
         v_connections = v_connections.view(ready_connection_count,
                                            v_connections.size)
         pass

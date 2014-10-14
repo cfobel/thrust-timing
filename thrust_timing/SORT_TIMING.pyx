@@ -1,24 +1,35 @@
 #distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
 from libc.stdint cimport int32_t, bool, uint8_t
+from cython.operator cimport dereference as deref
 from cythrust.thrust.device_vector cimport device_vector
 from cythrust.thrust.partition cimport (counted_stable_partition,
                                         counted_stable_partition_w_stencil)
 from cythrust.thrust.sort cimport sort_by_key
+from cythrust.thrust.scatter cimport scatter
 from cythrust.thrust.fill cimport fill_n, fill
 from cythrust.thrust.transform cimport transform2
+from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.reduce cimport reduce_by_key
 from cythrust.thrust.functional cimport (positive, non_negative, minimum,
-                                         equal_to, plus, maximum)
+                                         equal_to, plus, maximum, absolute,
+                                         unpack_binary_args, minus,
+                                         unpack_ternary_args)
 from cythrust.thrust.tuple cimport (make_tuple2, make_tuple3, make_tuple4,
                                     make_tuple5, make_tuple6, make_tuple7)
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.device_vector cimport (DeviceVectorViewInt32,
+                                     DeviceVectorFloat32,
                                      DeviceVectorViewFloat32,
                                      DeviceVectorViewUint8)
 from cythrust.thrust.copy cimport copy, copy_n
 from cythrust.thrust.replace cimport replace_if_w_stencil
+
+
+cdef extern from "delay.h" nogil:
+    cdef cppclass timing_delay 'delay' [T]:
+        timing_delay(T, int32_t, int32_t)
 
 
 def sort_by_target_key(DeviceVectorViewInt32 source_key,
@@ -33,23 +44,25 @@ def sort_by_target_key(DeviceVectorViewInt32 source_key,
                                               delay._begin)))
 
 
-def step1(DeviceVectorViewFloat32 block_min_source_longest_path,
-          DeviceVectorViewFloat32 longest_paths,
-          DeviceVectorViewInt32 source_key,
-          DeviceVectorViewFloat32 source_longest_path):
+def reset_block_min_source_longest_path(
+    DeviceVectorViewFloat32 block_min_source_longest_path):
     # Equivalent to:
     #
     #     block_min_source_longest_path[:] = -1e6
     fill(block_min_source_longest_path._begin,
          block_min_source_longest_path._end, <float>(-1e6))
 
+
+def step1(DeviceVectorViewFloat32 longest_paths,
+          DeviceVectorViewInt32 source_key,
+          DeviceVectorViewFloat32 source_longest_path):
     # Equivalent to:
     #
     #     connections['source_longest_path'] = longest_paths[connections
     #                                                        .loc[:, 'source_key']
     #                                                        .values]
-    copy(make_permutation_iterator(longest_paths._begin, source_key._begin),
-         make_permutation_iterator(longest_paths._end, source_key._end),
+    copy(make_permutation_iterator(longest_paths._vector.begin(), source_key._begin),
+         make_permutation_iterator(longest_paths._vector.begin(), source_key._end),
          source_longest_path._begin)
 
 
@@ -188,8 +201,25 @@ def step10(DeviceVectorViewFloat32 longest_paths,
     # Equivalent to:
     #
     #     longest_paths[max_target_longest_path.index] = max_target_longest_path.values
-    copy_n(max_target_longest_path._begin, resolved_block_count,
-           make_permutation_iterator(longest_paths._begin, reduced_keys._begin))
+    #copy(max_target_longest_path._begin, max_target_longest_path._begin +
+         #resolved_block_count, make_permutation_iterator(longest_paths._begin,
+                                                         #reduced_keys._begin))
+    scatter(max_target_longest_path._begin, max_target_longest_path._begin +
+            resolved_block_count, reduced_keys._begin, longest_paths._vector.begin())
+
+
+def scatter_longest_paths(DeviceVectorFloat32 longest_paths,
+                          DeviceVectorViewFloat32 max_target_longest_path,
+                          DeviceVectorViewInt32 reduced_keys,
+                          size_t resolved_block_count):
+    # Equivalent to:
+    #
+    #     longest_paths[max_target_longest_path.index] = max_target_longest_path.values
+    #copy(max_target_longest_path._begin, max_target_longest_path._begin +
+         #resolved_block_count, make_permutation_iterator(longest_paths._begin,
+                                                         #reduced_keys._begin))
+    scatter(max_target_longest_path._begin, max_target_longest_path._begin +
+            resolved_block_count, reduced_keys._begin, longest_paths._vector.begin())
 
 
 cpdef fill_longest_paths(DeviceVectorViewInt32 external_block_keys,
@@ -219,3 +249,96 @@ cpdef fill_longest_paths(DeviceVectorViewInt32 external_block_keys,
     fill_n(make_permutation_iterator(longest_paths._vector.begin(),
                                      single_connection_blocks._vector.begin()),
            count, 0)
+
+
+cpdef look_up_delay(DeviceVectorViewInt32 source_key,
+                    DeviceVectorViewInt32 target_key,
+                    DeviceVectorViewUint8 delay_type,
+                    DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_y,
+                    DeviceVectorViewFloat32 arch_delays,
+                    int32_t nrows, int32_t ncols,
+                    DeviceVectorViewInt32 delta_x,
+                    DeviceVectorViewInt32 delta_y,
+                    DeviceVectorViewFloat32 delay):
+    cdef size_t count = source_key.size
+    cdef absolute[int32_t] abs_func
+    cdef minus[int32_t] minus_func
+    cdef unpack_binary_args[minus[int32_t]] *unpacked_minus = \
+        new unpack_binary_args[minus[int32_t]](minus_func)
+    cdef timing_delay[device_vector[float].iterator] *delay_f = \
+        new timing_delay[device_vector[float].iterator](arch_delays._begin,
+                                                        nrows, ncols)
+    cdef unpack_ternary_args[timing_delay[device_vector[float].iterator]] \
+        *unpacked_delay = new \
+        unpack_ternary_args[timing_delay[device_vector[float].iterator]]\
+        (deref(delay_f))
+
+    # Compute `delta_x` and `delta_y`.
+    # Equivalent to:
+    #
+    #     delta_x = np.abs(p_x[source_key] - p_x[target_key])
+    #     delta_y = np.abs(p_y[source_key] - p_y[target_key])
+    copy_n(
+        make_zip_iterator(
+            make_tuple2(
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_x._begin,
+                                    source_key._begin),
+                                make_permutation_iterator(
+                                    p_x._begin,
+                                    target_key._begin))),
+                        deref(unpacked_minus)), abs_func),
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_y._begin,
+                                    source_key._begin),
+                                make_permutation_iterator(
+                                    p_y._begin,
+                                    target_key._begin))),
+                        deref(unpacked_minus)), abs_func))),
+        count, make_zip_iterator(make_tuple2(delta_x._begin,
+                                             delta_y._begin)))
+
+    # Compute `delta_x` and `delta_y`.
+    # Equivalent to:
+    #
+    #     delay = timing_delay(np.abs(p_x[source_key] - p_x[target_key]),
+    #                          np.abs(p_y[source_key] - p_y[target_key]))
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple3(
+                    delay_type._begin,
+                    make_transform_iterator(
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_x._begin,
+                                        source_key._begin),
+                                    make_permutation_iterator(
+                                        p_x._begin,
+                                        target_key._begin))),
+                            deref(unpacked_minus)), abs_func),
+                    make_transform_iterator(
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_y._begin,
+                                        source_key._begin),
+                                    make_permutation_iterator(
+                                        p_y._begin,
+                                        target_key._begin))),
+                            deref(unpacked_minus)), abs_func))),
+            deref(unpacked_delay)), count, delay._begin)
+    del unpacked_minus
+    del delay_f
+    del unpacked_delay
