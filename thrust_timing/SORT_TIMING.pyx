@@ -477,8 +477,10 @@ def connection_cost(float criticality_exp,
 
 def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
                             DeviceVectorViewFloat32 arrival_cost,
+                            DeviceVectorViewFloat32 arrival_cost_prime,
                             DeviceVectorViewInt32 departure_target_key,
                             DeviceVectorViewFloat32 departure_cost,
+                            DeviceVectorViewFloat32 departure_cost_prime,
                             DeviceVectorViewInt32 arrival_reduced_keys,
                             DeviceVectorViewInt32 departure_reduced_keys,
                             DeviceVectorViewFloat32
@@ -489,17 +491,28 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
                             block_arrival_cost,
                             DeviceVectorViewFloat32
                             block_departure_cost):
+    cdef minus[float] minus_f
+    cdef plus[float] plus_f
+
+    transform2(arrival_cost_prime._begin, arrival_cost_prime._end,
+               arrival_cost._begin, arrival_cost_prime._begin, minus_f)
+
     cdef size_t arrival_block_count = (
         <device_vector[int32_t].iterator>
         accumulate_by_key(arrival_target_key._begin, arrival_target_key._end,
-                          arrival_cost._begin, arrival_reduced_keys._begin,
+                          arrival_cost_prime._begin,
+                          arrival_reduced_keys._begin,
                           arrival_reduced_target_cost._begin).first -
         arrival_reduced_keys._begin)
+
+    transform2(departure_cost_prime._begin, departure_cost_prime._end,
+               departure_cost._begin, departure_cost_prime._begin, minus_f)
 
     cdef size_t departure_block_count = (
         <device_vector[int32_t].iterator>
         accumulate_by_key(departure_target_key._begin,
-                          departure_target_key._end, departure_cost._begin,
+                          departure_target_key._end,
+                          departure_cost_prime._begin,
                           departure_reduced_keys._begin,
                           departure_reduced_target_cost._begin).first -
         departure_reduced_keys._begin)
@@ -512,5 +525,8 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
         departure_reduced_target_cost._begin, departure_block_count,
         make_permutation_iterator(block_departure_cost._begin,
                                   departure_reduced_keys._begin))
+
+    transform2(block_arrival_cost._begin, block_arrival_cost._end,
+               block_departure_cost._begin, block_arrival_cost._begin, plus_f)
 
     return arrival_block_count, departure_block_count
