@@ -72,4 +72,24 @@ struct connection_cost {
 };
 
 
+template <typename T>
+struct normalized_weighted_sum {
+  typedef T result_type;
+
+  T alpha;
+  T alpha_not;
+  T inv_max_a;
+  T inv_max_b;
+
+  normalized_weighted_sum(T alpha, T max_a, T max_b)
+    : alpha(alpha), alpha_not(1 - alpha), inv_max_a(1. / max_a),
+      inv_max_b(1. / max_b) {}
+
+  template <typename T1, typename T2>
+  result_type operator() (T1 a, T2 b) {
+    return alpha * a * inv_max_a + alpha_not * b * inv_max_b;
+  }
+};
+
+
 #endif  // #ifndef ___SORT_TIMING__DELAY__H___

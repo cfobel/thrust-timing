@@ -39,6 +39,9 @@ cdef extern from "delay.h" nogil:
     cdef cppclass c_connection_cost 'connection_cost' [T]:
         c_connection_cost(T, T)
 
+    cdef cppclass normalized_weighted_sum [T]:
+        normalized_weighted_sum(T, T, T)
+
 
 def sort_by_target_key(DeviceVectorViewInt32 source_key,
                        DeviceVectorViewInt32 target_key,
@@ -548,3 +551,18 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
                                                   block_arrival_cost._end))
 
     return arrival_block_count, departure_block_count, max_delta_cost
+
+
+def compute_normalized_weighted_sum(float alpha, DeviceVectorViewFloat32 a,
+                                    float a_max, DeviceVectorViewFloat32 b,
+                                    float b_max,
+                                    DeviceVectorViewFloat32 output):
+    # Equivalent to:
+    #
+    #     self.delta_n[:] = ((alpha * self.delta_n[:] / max_wirelength_delta) +
+    #                        ((1 - alpha) * block_arrays['arrival_cost'] /
+    #                         max_timing_delta))
+    cdef normalized_weighted_sum[float] *w_sum =\
+        new normalized_weighted_sum[float](alpha, a_max, b_max)
+
+    transform2(a._begin, a._end, b._begin, output._begin, deref(w_sum))
