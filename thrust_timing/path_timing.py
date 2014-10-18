@@ -1,9 +1,13 @@
 from cythrust.device_vector import DeviceVectorFloat32, DeviceVectorViewFloat32
 import cythrust.device_vector as dv
 from cythrust import DeviceDataFrame
+from cythrust import cu_dv
 from cythrust import DeviceVectorCollection
 from thrust_timing.SORT_TIMING import (look_up_delay, step1, step2, step8,
                                        step9, step10)
+from thrust_timing.CU_SORT_TIMING import (step1 as cu_step1, step2 as cu_step2,
+                                          step8 as cu_step8, step9 as cu_step9,
+                                          step10 as cu_step10)
 from thrust_timing.sort_timing import (compute_arrival_times,
                                        compute_departure_times,
                                        reset_timing_data)
@@ -116,13 +120,11 @@ class PathTimingData(object):
         self.update_delays_from_positions(positions_device_vector_view)
 
         self.block_data.v['longest_paths'][:] = 0
-        longest_paths = np.zeros(self.block_data.v['longest_paths'].size,
-                                 dtype=np.float32)
 
         for view in self.views:
             step1(self.block_data.v['longest_paths'], view.v['source_key'],
                   view.v['source_longest_path'])
-            step2(view.v['sync_source'], self.block_data.v['longest_paths'])
+            step2(view.v['sync_source'], view.v['source_longest_path'])
             step8(view.v['delay'], view.v['target_longest_path'],
                   view.v['source_longest_path'], view.size)
             resolved_block_count = step9(view.v['target_key'],
@@ -132,48 +134,4 @@ class PathTimingData(object):
             step10(self.block_data.v['longest_paths'],
                    view.v['max_target_longest_path'], view.v['reduced_keys'],
                    resolved_block_count)
-
-            # TODO: __BUG__
-            #
-            # We are only copying into the `longest_paths` `numpy` array here
-            # because when we read from `self.block_data.v['longest_paths']`,
-            # there seem to be inconsistent entries that are overwritten with
-            # zero.
-            #
-            # Notes
-            # =====
-            #
-            #  - Since the particular entries _(including the number of
-            #    entries)_ that are overwritten varies from run to run, it
-            #    seems that there is some type of write hazard.
-            #  - However, the longest path for the blocks at each level are
-            #    dependent on the longest path of the blocks from previous
-            #    levels.  This implies that the longest path values are being
-            #    read from the `self.block_data.v['longest_paths']` array by
-            #    the Thrust C code, where things seem to be working ok.
-            #
-            # TODO
-            # ====
-            #
-            # The following is a potential Thrust-based workaround for the bug
-            # described above.
-            #
-            #  - Create two new level-ordered arrays:
-            #
-            #   * `max_target_longest_path`
-            #   * `target_key`
-            #
-            #  - Write a Thrust function to copy the following array contents
-            #    from each iteration to a _contiguous section_ of the
-            #    corresponding new, level-ordered array:
-            #
-            #   * `views.v['max_target_longest_path'][:resolved_block_count]`
-            #   * `views.v['reduced_keys'][:resolved_block_count]`
-            #
-            #  - After all levels are processed, do a single scatter from the
-            #    level-ordered `max_target_longest_path` to the output
-            #    `longest_paths` array, using the `target_key` level-ordered
-            #    array as the scatter index map.
-            longest_paths[view.v['reduced_keys'][:resolved_block_count]] = \
-                view.v['max_target_longest_path'][:resolved_block_count]
-        return longest_paths
+        return self.block_data['longest_paths'].values
