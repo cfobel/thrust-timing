@@ -266,6 +266,20 @@ def step9(DeviceVectorViewInt32 target_key,
     incoming connections, compute the longest delay including the source
     longest path plus the delay of the corresponding connection.
 
+                   source
+                   ┌───┐
+               ┅  ─│   │──┐
+                   └───┘
+                          ┋
+            source           target
+            ┌───┐         └──┌───┐
+        ┅  ─│   │───  ┅  ────│   │
+            └───┘        ┌───└───┘
+             source      │
+             ┌───┐       │
+         ┅  ─│   │──  ┅  ┘
+             └───┘
+
     Equivalent to:
 
         max_target_longest_path = \
