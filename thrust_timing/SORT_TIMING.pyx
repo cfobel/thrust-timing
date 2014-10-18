@@ -67,11 +67,15 @@ def reset_block_min_source_longest_path(
 def step1(DeviceVectorViewFloat32 longest_paths,
           DeviceVectorViewInt32 source_key,
           DeviceVectorViewFloat32 source_longest_path):
-    # Equivalent to:
-    #
-    #     connections['source_longest_path'] = longest_paths[connections
-    #                                                        .loc[:, 'source_key']
-    #                                                        .values]
+    '''
+    Load the current longest path for the source block of each connection.
+
+    Equivalent to:
+
+        connections['source_longest_path'] = longest_paths[connections
+                                                           .loc[:, 'source_key']
+                                                           .values]
+    '''
     copy(make_permutation_iterator(longest_paths._vector.begin(), source_key._begin),
          make_permutation_iterator(longest_paths._vector.begin(), source_key._end),
          source_longest_path._begin)
@@ -79,10 +83,17 @@ def step1(DeviceVectorViewFloat32 longest_paths,
 
 def step2(DeviceVectorViewUint8 sync_source,
           DeviceVectorViewFloat32 source_longest_path):
+    '''
+    If the source of a connection is a synchronous source _(i.e., a synchronous
+    logic block, an input, or an output)_, set the source longest path of the
+    connection to zero.  This is because synchronous blocks are the end-points
+    of path delays.
+
+    Equivalent to:
+
+        connections.loc[connections.sync_source > 0, 'source_longest_path'] = 0
+    '''
     cdef positive[uint8_t] positive_f
-    # Equivalent to:
-    #
-    #     connections.loc[connections.sync_source > 0, 'source_longest_path'] = 0
     replace_if_w_stencil(source_longest_path._begin, source_longest_path._end,
                          sync_source._begin, positive_f, 0)
 
@@ -97,8 +108,21 @@ def step3(DeviceVectorViewInt32 source_key,
           DeviceVectorViewFloat32 source_longest_path,
           DeviceVectorViewInt32 reduced_keys):
     '''
-    __NB__ Data **must** be sorted by **`target_key`** before call this
-    function to work as expected.
+    Determine which target blocks have the longest path for sources of all
+    _incoming_ connections resolved.
+
+    For each block, this is accomplished by computing the minimum source
+    longest path of all connections targeting the block.  If the minimum source
+    longest path is less than zero, there is _at least one_ incoming connection
+    that is not resolved.  A category reduction is used to efficiently compute
+    the minimum-per-target-block.
+
+
+    Notes
+    =====
+
+    Data **must** be sorted by **`target_key`** before calling this function to
+    work as expected.
     '''
     cdef equal_to[int32_t] equal_to
     cdef minimum[float] minimum_f
@@ -116,6 +140,18 @@ def step3(DeviceVectorViewInt32 source_key,
 def step4(DeviceVectorViewFloat32 block_min_source_longest_path,
           DeviceVectorViewFloat32 min_source_longest_path,
           DeviceVectorViewInt32 reduced_keys, size_t unique_block_count):
+    '''
+    Scatter the reduced target-block-key/minimum-source-path to the
+    corresponding positions in the block-indexed array containing the minimum
+    source longest path for each block _(`block_min_source_longest_path`)_.
+
+    Given a target block key, the `block_min_source_longest_path` provides
+    constant-time look-up for the corresponding minimum source longest-path.
+
+    Equivalent to:
+
+        block_min_source_longest_path[min_source_longest_path.index] = min_source_longest_path.values
+    '''
     cdef non_negative[int32_t] non_negative_f
 
     # block_min_source_longest_path[min_source_longest_path.index] = min_source_longest_path.values
@@ -127,7 +163,20 @@ def step4(DeviceVectorViewFloat32 block_min_source_longest_path,
 def step5(DeviceVectorViewFloat32 block_min_source_longest_path,
           DeviceVectorViewInt32 target_key,
           DeviceVectorViewFloat32 min_source_longest_path):
-    # connections.min_source_longest_path = block_min_source_longest_path[connections.target_key.values].values
+    '''
+    Load the minimum source block longest path for the target block of each
+    connection.  This effectively marks each connection according to whether or
+    not all connections targeting the target block of the connection have been
+    resolved.
+
+    The `block_min_source_longest_path` is accessed, permuted by the target key
+    of each connection, to load the minimum source longest path of the
+    connection in constant time.
+
+    Equivalent to:
+
+        connections.min_source_longest_path = block_min_source_longest_path[connections.target_key.values].values
+    '''
     copy(make_permutation_iterator(block_min_source_longest_path._begin,
                                    target_key._begin),
          make_permutation_iterator(block_min_source_longest_path._begin,
@@ -142,13 +191,24 @@ def step6(DeviceVectorViewInt32 source_key,
           DeviceVectorViewFloat32 target_longest_path,
           DeviceVectorViewFloat32 min_source_longest_path,
           DeviceVectorViewFloat32 source_longest_path):
+    '''
+    Partition the list of connections, packing connections with target blocks
+    with all incoming source longest paths resolved to the front of the list,
+    while maintaining relative ordering.
+
+    Note that since relative ordering is maintained, all connections will
+    remained grouped by target key, since all connections with the same target
+    key share the same minimum source longest path value.
+
+
+    Equivalent to:
+
+        connections.sort(['min_source_longest_path', 'target_key'], inplace=True,
+                         ascending=False)
+        ready_connection_count = (connections.min_source_longest_path >= 0).sum()
+    '''
     cdef non_negative[int32_t] non_negative_f
 
-    # Equivalent to:
-    #
-    #     connections.sort(['min_source_longest_path', 'target_key'], inplace=True,
-    #                      ascending=False)
-    #     ready_connection_count = (connections.min_source_longest_path >= 0).sum()
     cdef ready_connection_count = counted_stable_partition_w_stencil(
         make_zip_iterator(
             make_tuple6(source_key._begin, target_key._begin,
@@ -166,9 +226,13 @@ def step6(DeviceVectorViewInt32 source_key,
 
 
 def step7(DeviceVectorViewFloat32 delay, size_t ready_connection_count):
-    # Equivalent to:
-    #
-    #     connections[:ready_connection_count].delay = 1.
+    '''
+    Load a unit delay for all connections.
+
+    Equivalent to:
+
+        connections[:ready_connection_count].delay = 1.
+    '''
     fill_n(delay._begin, ready_connection_count, 1)
 
 
@@ -176,12 +240,19 @@ def step8(DeviceVectorViewFloat32 delay,
           DeviceVectorViewFloat32 target_longest_path,
           DeviceVectorViewFloat32 source_longest_path,
           size_t ready_connection_count):
+    '''
+    Add the delay of each connection to the longest path to the corresponding
+    source block.  The result is the longest path from a source end-point to
+    the target block of each connection _which includes the respective
+    connection_.
+
+    Equivalent to:
+
+        connections[:ready_connection_count].target_longest_path = \
+            (connections[:ready_connection_count].delay +
+             connections[:ready_connection_count].source_longest_path)
+    '''
     cdef plus[float] plus_f
-    # Equivalent to:
-    #
-    #     connections[:ready_connection_count].target_longest_path = \
-    #         (connections[:ready_connection_count].delay +
-    #          connections[:ready_connection_count].source_longest_path)
     transform2(delay._begin, delay._begin + ready_connection_count,
                source_longest_path._begin, target_longest_path._begin, plus_f)
 
@@ -190,13 +261,19 @@ def step9(DeviceVectorViewInt32 target_key,
           DeviceVectorViewFloat32 target_longest_path,
           DeviceVectorViewFloat32 max_target_longest_path,
           DeviceVectorViewInt32 reduced_keys, size_t ready_connection_count):
+    '''
+    For target blocks that have the source longest path resolved for all
+    incoming connections, compute the longest delay including the source
+    longest path plus the delay of the corresponding connection.
+
+    Equivalent to:
+
+        max_target_longest_path = \
+            (connections[:ready_connection_count].groupby('target_key')
+             .agg({'target_longest_path': np.max}))
+    '''
     cdef maximum[float] maximum_f
     cdef equal_to[int32_t] equal_to
-    # Equivalent to:
-    #
-    #     max_target_longest_path = \
-    #         (connections[:ready_connection_count].groupby('target_key')
-    #          .agg({'target_longest_path': np.max}))
     cdef size_t resolved_block_count = (
         <device_vector[int32_t].iterator> reduce_by_key(
             target_key._begin, target_key._begin + ready_connection_count,
@@ -209,12 +286,15 @@ def step9(DeviceVectorViewInt32 target_key,
 def step10(DeviceVectorViewFloat32 longest_paths,
            DeviceVectorViewFloat32 max_target_longest_path,
            DeviceVectorViewInt32 reduced_keys, size_t resolved_block_count):
-    # Equivalent to:
-    #
-    #     longest_paths[max_target_longest_path.index] = max_target_longest_path.values
-    #copy(max_target_longest_path._begin, max_target_longest_path._begin +
-         #resolved_block_count, make_permutation_iterator(longest_paths._begin,
-                                                         #reduced_keys._begin))
+    '''
+    Scatter the reduced target-block-key/maximum connection delays to the
+    corresponding positions in the block-indexed array containing the _longest
+    path_ targeting each block _(`longest_paths`)_.
+
+    Equivalent to:
+
+        longest_paths[max_target_longest_path.index] = max_target_longest_path.values
+    '''
     scatter(max_target_longest_path._begin, max_target_longest_path._begin +
             resolved_block_count, reduced_keys._begin, longest_paths._vector.begin())
 
@@ -223,12 +303,15 @@ def scatter_longest_paths(DeviceVectorFloat32 longest_paths,
                           DeviceVectorViewFloat32 max_target_longest_path,
                           DeviceVectorViewInt32 reduced_keys,
                           size_t resolved_block_count):
-    # Equivalent to:
-    #
-    #     longest_paths[max_target_longest_path.index] = max_target_longest_path.values
-    #copy(max_target_longest_path._begin, max_target_longest_path._begin +
-         #resolved_block_count, make_permutation_iterator(longest_paths._begin,
-                                                         #reduced_keys._begin))
+    '''
+    Scatter the reduced target-block-key/maximum connection delays to the
+    corresponding positions in the block-indexed array containing the _longest
+    path_ targeting each block _(`longest_paths`)_.
+
+    Equivalent to:
+
+        longest_paths[max_target_longest_path.index] = max_target_longest_path.values
+    '''
     scatter(max_target_longest_path._begin, max_target_longest_path._begin +
             resolved_block_count, reduced_keys._begin, longest_paths._vector.begin())
 
@@ -269,6 +352,24 @@ cpdef look_up_delay(DeviceVectorViewInt32 source_key,
                     DeviceVectorViewFloat32 arch_delays,
                     int32_t nrows, int32_t ncols,
                     DeviceVectorViewFloat32 delay):
+    '''
+    Compute delay for each connection, based on a delays look-up table
+    _(`arch_delays`)_.
+
+        source
+        ┌───┐
+        │   │──┐       target
+        └───┘  │       ┌───┐
+               └─  ┅  ─│   │
+                       └───┘
+               delay?
+
+
+    Equivalent to:
+
+        delay = timing_delay(np.abs(p_x[source_key] - p_x[target_key]),
+                             np.abs(p_y[source_key] - p_y[target_key]))
+    '''
     cdef size_t count = source_key.size
     cdef absolute[int32_t] abs_func
     cdef minus[int32_t] minus_func
@@ -282,11 +383,6 @@ cpdef look_up_delay(DeviceVectorViewInt32 source_key,
         unpack_ternary_args[timing_delay[device_vector[float].iterator]]\
         (deref(delay_f))
 
-    # Compute `delay`
-    # Equivalent to:
-    #
-    #     delay = timing_delay(np.abs(p_x[source_key] - p_x[target_key]),
-    #                          np.abs(p_y[source_key] - p_y[target_key]))
     copy_n(
         make_transform_iterator(
             make_zip_iterator(
@@ -328,6 +424,29 @@ cpdef look_up_delay_prime(DeviceVectorViewInt32 source_key,
                     DeviceVectorViewFloat32 arch_delays,
                     int32_t nrows, int32_t ncols,
                     DeviceVectorViewFloat32 delay):
+    '''
+    Compute delay for each connection, based on a delays look-up table
+    _(`arch_delays`)_, but using the proposed new position for each _target
+    block_.  Note that the source block of each connection is assumed to hold
+    the current position.
+
+                                 target
+        source                 (p_x, p_y)
+      (p_x, p_y)       target    ┌┄┄┄┐
+        ┌───┐       (p_x_prime,  ┊   ┊
+        │   │──┐     p_y_prime)╱ └┄┄┄┘
+        └───┘  │       ┌───┐  ╱
+               └─  ┅  ─│   │
+                       └───┘
+               delay?
+
+
+
+    Equivalent to:
+
+        delay = timing_delay(np.abs(p_x[source_key] - p_x_prime[target_key]),
+                             np.abs(p_y[source_key] - p_y_prime[target_key]))
+    '''
     cdef size_t count = source_key.size
     cdef absolute[int32_t] abs_func
     cdef minus[int32_t] minus_func
@@ -341,11 +460,6 @@ cpdef look_up_delay_prime(DeviceVectorViewInt32 source_key,
         unpack_ternary_args[timing_delay[device_vector[float].iterator]]\
         (deref(delay_f))
 
-    # Compute `delay`
-    # Equivalent to:
-    #
-    #     delay = timing_delay(np.abs(p_x[source_key] - p_x_prime[target_key]),
-    #                          np.abs(p_y[source_key] - p_y_prime[target_key]))
     copy_n(
         make_transform_iterator(
             make_zip_iterator(
@@ -385,6 +499,29 @@ def connection_criticality(DeviceVectorViewFloat32 delay,
                            DeviceVectorViewInt32 driver_key,
                            DeviceVectorViewInt32 sink_key,
                            DeviceVectorViewFloat32 criticality):
+    '''
+    Compute the criticality of each connection based on:
+
+     - The longest path of the source block.
+     - The longest path of the target block.
+     - The delay of the connection.
+
+           Driver         Source             Target           Sink
+           ╔═══╗          ┌───┐              ┌───┐           ╔═══╗
+           ║   ║───  ┅  ──│   │──────────────│   │───  ┅  ───║   ║
+           ╚═══╝          └───┘              └───┘           ╚═══╝
+                 Longest         Connection         Longest
+                path from          delay           path from
+                driver to                          target to
+                 source                              sink
+
+    Equivalent to:
+
+        a.v['criticality'][:] = ((self._arrival_times[a['source_key'].values] +
+                                    a['delay'] +
+                                    self._departure_times[a['target_key'].values])
+                                    / self.critical_path)
+    '''
     cdef maximum[float] maximum_f
 
     cdef float critical_path = deref(max_element(arrival_times._begin,
@@ -397,12 +534,6 @@ def connection_criticality(DeviceVectorViewFloat32 delay,
         new unpack_ternary_args[c_connection_criticality[float]] \
         (deref(connection_criticality_f))
 
-    # Equivalent to:
-    #
-    #     a.v['criticality'][:] = ((self._arrival_times[a['source_key'].values] +
-    #                                 a['delay'] +
-    #                                 self._departure_times[a['target_key'].values])
-    #                                 / self.critical_path)
     copy_n(
         make_transform_iterator(
             make_zip_iterator(
