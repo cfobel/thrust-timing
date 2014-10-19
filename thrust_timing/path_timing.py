@@ -1,13 +1,15 @@
 from cythrust.device_vector import DeviceVectorFloat32, DeviceVectorViewFloat32
 import cythrust.device_vector as dv
 from cythrust import DeviceDataFrame
-from cythrust import cu_dv
 from cythrust import DeviceVectorCollection
 from thrust_timing.SORT_TIMING import (look_up_delay, step1, step2, step8,
                                        step9, step10)
-from thrust_timing.CU_SORT_TIMING import (step1 as cu_step1, step2 as cu_step2,
-                                          step8 as cu_step8, step9 as cu_step9,
-                                          step10 as cu_step10)
+from cythrust import cu_dv
+from thrust_timing.cuda.SORT_TIMING import (step1 as cu_step2,
+                                            step2 as cu_step2,
+                                            step8 as cu_step8,
+                                            step9 as cu_step9,
+                                            step10 as cu_step10)
 from thrust_timing.sort_timing import (compute_arrival_times,
                                        compute_departure_times,
                                        reset_timing_data)
@@ -103,16 +105,6 @@ class PathTimingData(object):
     @profile
     def update_position_based_longest_paths(self,
                                             positions_device_vector_view):
-        '''
-        BUG
-        ===
-
-        We are only copying into the intermediate `longest_paths` `numpy` array
-        here because when we read from `self.block_data.v['longest_paths']`,
-        there seem to be inconsistent entries that are overwritten with zero.
-
-        See the comments in the code below for details.
-        '''
         # Reset source_longest_path to sentinel value.
         self.connections.v['source_longest_path'][:] = -1e6
         #reset_timing_data(self.special_blocks, self.block_data,
@@ -120,6 +112,9 @@ class PathTimingData(object):
         self.update_delays_from_positions(positions_device_vector_view)
 
         self.block_data.v['longest_paths'][:] = 0
+        #self.cu_block_data = DeviceDataFrame(self.block_data[:],
+                                             #allocator=cu_dv)
+        #self.cu_view = DeviceDataFrame(view[:], allocator=cu_dv)
 
         for view in self.views:
             step1(self.block_data.v['longest_paths'], view.v['source_key'],
