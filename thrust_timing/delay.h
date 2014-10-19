@@ -1,6 +1,8 @@
 #ifndef ___SORT_TIMING__DELAY__H___
 #define ___SORT_TIMING__DELAY__H___
 
+#include <thrust/functional.h>
+
 
 template <typename DelayIterator>
 struct delay {
@@ -9,10 +11,12 @@ struct delay {
   int32_t nrows;
   int32_t ncols;
 
+  __host__ __device__
   delay(DelayIterator delays, int32_t nrows, int32_t ncols)
     : delays(delays), nrows(nrows), ncols(ncols) {}
 
   template <typename T1, typename T2, typename T3>
+  __host__ __device__
   result_type operator() (T1 delay_type, T2 delta_x, T3 delta_y) {
     size_t stride = 0;
     size_t offset = 0;
@@ -46,9 +50,11 @@ struct connection_criticality {
   typedef float result_type;
   float critical_path;
 
+  __host__ __device__
   connection_criticality(T critical_path) : critical_path(critical_path) {}
 
   template <typename T1, typename T2, typename T3>
+  __host__ __device__
   result_type operator() (T1 arrival_time, T2 delay, T3 departure_time) {
     return (arrival_time + delay + departure_time) / critical_path;
   }
@@ -61,10 +67,12 @@ struct connection_cost {
   float critical_path;
   float criticality_exp;
 
+  __host__ __device__
   connection_cost(T critical_path, T criticality_exp)
     : critical_path(critical_path), criticality_exp(criticality_exp) {}
 
   template <typename T1, typename T2, typename T3>
+  __host__ __device__
   result_type operator() (T1 arrival_time, T2 delay, T3 departure_time) {
     return pow((arrival_time + delay + departure_time) / critical_path,
                criticality_exp) * delay;
@@ -81,11 +89,13 @@ struct normalized_weighted_sum {
   T inv_max_a;
   T inv_max_b;
 
+  __host__ __device__
   normalized_weighted_sum(T alpha, T max_a, T max_b)
     : alpha(alpha), alpha_not(1 - alpha), inv_max_a(1. / max_a),
       inv_max_b(1. / max_b) {}
 
   template <typename T1, typename T2>
+  __host__ __device__
   result_type operator() (T1 a, T2 b) {
     return alpha * a * inv_max_a + alpha_not * b * inv_max_b;
   }
