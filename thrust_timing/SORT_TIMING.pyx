@@ -26,6 +26,7 @@ from cythrust.device_vector cimport (DeviceVectorViewInt32,
                                      DeviceVectorViewFloat32,
                                      DeviceVectorViewUint8)
 from cythrust.thrust.copy cimport copy, copy_n
+from cythrust.device_vector.extrema import max_abs_float32
 from cythrust.thrust.replace cimport replace_if_w_stencil
 
 
