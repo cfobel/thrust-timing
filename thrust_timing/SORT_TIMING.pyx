@@ -570,7 +570,7 @@ def connection_cost(float criticality_exp,
                     DeviceVectorViewInt32 driver_key,
                     DeviceVectorViewInt32 sink_key,
                     DeviceVectorViewFloat32 cost, 
-                    float critical_path=-1):
+                    float critical_path):
     '''
     Compute the cost of each connection.  The result is equivalent to the
     following:
@@ -590,10 +590,6 @@ def connection_cost(float criticality_exp,
        exponent is always less than or equal to one.
     '''
     cdef maximum[float] maximum_f
-
-    if critical_path < 0:
-        critical_path = deref(max_element(arrival_times._begin,
-                                          arrival_times._end))
 
     cdef c_connection_cost[float] *connection_cost_f = \
         new c_connection_cost[float](critical_path, criticality_exp)
