@@ -1,16 +1,17 @@
 from collections import OrderedDict
+
+import numpy as np
 from thrust_timing.SORT_TIMING import fill_longest_paths
 from cythrust import DeviceDataFrame, DeviceVectorCollection
 from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
-                                                        CONNECTION_SINK)
+                                                        CONNECTION_SINK,
+                                                        CONNECTION_CLOCK,
+                                                        INPUT_BLOCK,
+                                                        LOGIC_BLOCK,
+                                                        OUTPUT_BLOCK)
 from .SORT_TIMING import (reset_block_min_source_longest_path, step1, step2,
                           step3, step4, step5, step6, step7, step8, step9,
                           step10, sort_by_target_key)
-
-
-import numpy as np
-import pandas as pd
-
 
 try:
     profile
@@ -18,8 +19,7 @@ except:
     profile = lambda (f): f
 
 
-@profile
-def prepare_device_timing_data(connections_table, source):
+def prepare_device_timing_data(connections, sync_logic_block_keys, source):
     '''
     Extract relevant information for timing calculations from a
     `ConnectionsTable` instance.  The data is copied into
@@ -49,47 +49,37 @@ def prepare_device_timing_data(connections_table, source):
        - `CONNECTION_SINK`: Sink blocks are treated as the source _(departure
          times)_.
     '''
-    source_label = 'driver_key'
-    target_label = 'sink_key'
-    external_blocks = 'input_block_keys'
+    block_count = connections.block_key.unique().size
+    source = CONNECTION_DRIVER
 
-    if source != CONNECTION_DRIVER:
-        # Assume `source == CONNECTION_SINK`
-        source_label, target_label = target_label, source_label
-        external_blocks = 'output_block_keys'
+    if source == CONNECTION_DRIVER:
+        source_label = 'net_key'
+        target_label = 'block_key'
+        external_block_type = INPUT_BLOCK
+    else:
+        source_label = 'block_key'
+        target_label = 'net_key'
+        external_block_type = OUTPUT_BLOCK
 
-    d_block_data = DeviceDataFrame()
-    d_block_data.add('longest_paths', np.empty(connections_table.block_count),
-                     dtype=np.float32)
-    d_block_data.add('min_source_longest_path', dtype=np.float32)
+    delay_connections = (connections.loc[connections.type == CONNECTION_SINK]
+                         [[source_label, target_label]].astype(np.int32))
 
-    d_special_blocks = DeviceVectorCollection(
-        OrderedDict([('external_block_keys', getattr(connections_table,
-                                                     external_blocks)()
-                      .astype(np.int32)),
-                     ('sync_logic_block_keys',
-                      connections_table.sync_logic_block_keys()
-                      .astype(np.int32)),
-                     ('single_connection_blocks', connections_table
-                      .single_connection_blocks)]))
-
-    connections = connections_table.sink_connections()[[source_label,
-                                                        target_label]]
-    for label in (source_label, target_label):
-        connections[label] = connections[label].values.astype(np.int32)
-    connections.rename(columns={source_label: 'source_key',
-                                target_label: 'target_key'}, inplace=True)
+    delay_connections.rename(columns={source_label: 'source_key',
+                                      target_label: 'target_key'},
+                             inplace=True)
 
     # Mark whether or not each source/target block is a synchronous logic
     # block.
-    block_is_sync = np.zeros(connections_table.block_count, dtype=np.uint8)
-    block_is_sync[connections_table.sync_logic_block_keys()] = True
+    block_is_sync = np.zeros(block_count, dtype=np.uint8)
+    block_is_sync[sync_logic_block_keys] = True
 
     # Initialize constant values.
-    connections['sync_source'] = block_is_sync[connections.source_key.values]
-    connections['sync_target'] = block_is_sync[connections.target_key.values]
+    delay_connections['sync_source'] = block_is_sync[delay_connections
+                                                     .source_key.values]
+    delay_connections['sync_target'] = block_is_sync[delay_connections
+                                                     .target_key.values]
 
-    d_connections = DeviceDataFrame(connections)
+    d_connections = DeviceDataFrame(delay_connections)
     d_connections.add('delay', dtype=np.float32)
     d_connections.add('target_longest_path', dtype=np.float32)
     d_connections.add('min_source_longest_path', dtype=np.float32)
@@ -97,9 +87,24 @@ def prepare_device_timing_data(connections_table, source):
     d_connections.add('max_target_longest_path', dtype=np.float32)
     d_connections.add('reduced_keys', dtype=np.int32)
 
-    v_connections = d_connections.view(d_connections.size)
+    block_net_counts = (connections.loc[connections.block_type ==
+                                       LOGIC_BLOCK].groupby('block_key')
+                        .apply(lambda x: len(x)))
+    single_connection_blocks = block_net_counts[block_net_counts <
+                                                2].values.astype(np.int32)
 
-    return d_special_blocks, d_block_data, v_connections
+    d_special_blocks = DeviceVectorCollection(
+        OrderedDict([('external_block_keys',
+                      connections.loc[connections.block_type ==
+                                      external_block_type, 'block_key']
+                      .unique().astype(np.int32)),
+                     ('sync_logic_block_keys', sync_logic_block_keys),
+                     ('single_connection_blocks', single_connection_blocks)]))
+    d_block_data = DeviceDataFrame()
+    d_block_data.add('longest_paths', np.empty(block_count), dtype=np.float32)
+    d_block_data.add('min_source_longest_path', dtype=np.float32)
+
+    return d_special_blocks, d_block_data, d_connections
 
 
 def reset_timing_data(d_special_blocks, d_block_data, v_connections):
@@ -118,9 +123,9 @@ def reset_timing_data(d_special_blocks, d_block_data, v_connections):
 
 
 @profile
-def compute_departure_times(connections_table):
+def compute_departure_times(connections, sync_logic_block_keys):
     d_special_blocks, d_block_data, v_connections = prepare_device_timing_data(
-        connections_table, CONNECTION_SINK)
+        connections, sync_logic_block_keys, CONNECTION_SINK)
     reset_timing_data(d_special_blocks, d_block_data, v_connections)
     d_block_data, views = compute_longest_target_paths(d_block_data,
                                                        v_connections)
@@ -128,9 +133,9 @@ def compute_departure_times(connections_table):
 
 
 @profile
-def compute_arrival_times(connections_table):
+def compute_arrival_times(connections, sync_logic_block_keys):
     d_special_blocks, d_block_data, v_connections = prepare_device_timing_data(
-        connections_table, CONNECTION_DRIVER)
+        connections, sync_logic_block_keys, CONNECTION_DRIVER)
     reset_timing_data(d_special_blocks, d_block_data, v_connections)
     d_block_data, views = compute_longest_target_paths(d_block_data,
                                                        v_connections)
