@@ -640,10 +640,17 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
     cdef plus[float] plus_f
 
     # Compute the difference in cost of incoming edges to blocks.
+    '''
+    arrival_cost_prime[:] -= arrival_cost[:]
+    '''
     transform2(arrival_cost_prime._begin, arrival_cost_prime._end,
                arrival_cost._begin, arrival_cost_prime._begin, minus_f)
 
     # Sum the differences in incoming costs by block.
+    '''
+    arrival_reduced_target_cost = (arrival_data[:].groupby('target_key')
+                                   ['cost_prime'].sum())
+    '''
     cdef size_t arrival_block_count = (
         <device_vector[int32_t].iterator>
         accumulate_by_key(arrival_target_key._begin, arrival_target_key._end,
@@ -651,6 +658,16 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
                           arrival_reduced_keys._begin,
                           arrival_reduced_target_cost._begin).first -
         arrival_reduced_keys._begin)
+
+    # Scatter the reduced difference of incoming edges for sink blocks to the
+    # corresponding position in the global block array.
+    '''
+    arrival_cost[arrival_reduced_target_cost.index] = arrival_reduced_target_cost
+    '''
+    copy_n(
+        arrival_reduced_target_cost._begin, arrival_block_count,
+        make_permutation_iterator(block_arrival_cost._begin,
+                                  arrival_reduced_keys._begin))
 
     # Compute the difference in cost of outgoing edges to blocks.
     transform2(departure_cost_prime._begin, departure_cost_prime._end,
@@ -666,23 +683,12 @@ def block_delta_timing_cost(DeviceVectorViewInt32 arrival_target_key,
                           departure_reduced_target_cost._begin).first -
         departure_reduced_keys._begin)
 
-    # Scatter the reduced difference of incoming edges for sink blocks to the
-    # corresponding position in the global block array.
-    copy_n(
-        arrival_reduced_target_cost._begin, arrival_block_count,
-        make_permutation_iterator(block_arrival_cost._begin,
-                                  arrival_reduced_keys._begin))
     # Scatter the reduced difference of outgoing edges for sink blocks to the
     # corresponding position in the global block array.
     copy_n(
         departure_reduced_target_cost._begin, departure_block_count,
         make_permutation_iterator(block_departure_cost._begin,
                                   departure_reduced_keys._begin))
-
-    # For each block, add together the differences in incoming and outgoing
-    # connection costs.
-    transform2(block_arrival_cost._begin, block_arrival_cost._end,
-               block_departure_cost._begin, block_arrival_cost._begin, plus_f)
 
     # For each block, add together the differences in incoming and outgoing
     # connection costs.

@@ -1,6 +1,8 @@
 import cythrust.device_vector as dv
 from cythrust import DeviceDataFrame
 from cythrust import DeviceVectorCollection
+from thrust_timing.SORT_TIMING import (look_up_delay, step1, step2, step8,
+                                       step9, step10)
 from thrust_timing.sort_timing import (compute_arrival_times,
                                        compute_departure_times)
 from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
@@ -52,8 +54,8 @@ def get_arch_data(nrows, ncols, allocator=dv):
 
 
 class PathTimingData(object):
-    def __init__(self, arch_data, connections_table, source=CONNECTION_DRIVER,
-                 allocator=dv):
+    def __init__(self, arch_data, connections, sync_logic_block_keys,
+                 source=CONNECTION_DRIVER, allocator=dv):
         if allocator == dv:
             self.SORT_TIMING = SORT_TIMING
             self.CONNECTIONS_TABLE = CONNECTIONS_TABLE
@@ -63,13 +65,13 @@ class PathTimingData(object):
         self.allocator = allocator
         self.arch_data = arch_data
         if source == CONNECTION_DRIVER:
-            self.special_blocks, block_data, connections = \
-                compute_arrival_times(connections_table)
+            self.special_blocks, block_data, delay_connections = \
+                compute_arrival_times(connections, sync_logic_block_keys)
             driver_label = 'source_key'
             sink_label = 'target_key'
         elif source == CONNECTION_SINK:
-            self.special_blocks, block_data, connections = \
-                compute_departure_times(connections_table)
+            self.special_blocks, block_data, delay_connections = \
+                compute_departure_times(connections, sync_logic_block_keys)
             sink_label = 'source_key'
             driver_label = 'target_key'
         else:
@@ -77,19 +79,23 @@ class PathTimingData(object):
                              '(CONNECTION_DRIVER, CONNECTION_SINK).')
         self.block_data = DeviceDataFrame(block_data[:], allocator=allocator)
         self.connections = DeviceDataFrame(
-            connections[0].base()[['source_key', 'sync_source', 'target_key',
-                                   'delay', 'source_longest_path',
-                                   'target_longest_path',
-                                   'max_target_longest_path', 'reduced_keys']],
+            delay_connections[0].base()[['source_key', 'sync_source',
+                                         'target_key', 'delay',
+                                         'source_longest_path',
+                                         'target_longest_path',
+                                         'max_target_longest_path',
+                                         'reduced_keys']],
             allocator=allocator)
         self.connections.add('delay_type', dtype=np.uint8)
         self.connections.add('sink_type', dtype=np.uint8)
         self.connections.add('driver_type', dtype=np.uint8)
 
         c = self.connections.v
-        block_types = self.allocator.from_array(connections_table
-                                                .block_data['type'].values)
-        block_types_v = self.allocator.view_from_vector(block_types)
+        block_types = (connections[['block_key', 'block_type']]
+                       .drop_duplicates().sort('block_key')['block_type']
+                       .values.astype(np.uint8))
+        d_block_types = self.allocator.from_array(block_types)
+        block_types_v = self.allocator.view_from_vector(d_block_types)
         self.CONNECTIONS_TABLE.driver_and_sink_type(c[driver_label],
                                                     c[sink_label],
                                                     c['driver_type'],
@@ -102,7 +108,7 @@ class PathTimingData(object):
         # Construct views/slices of the connection data frame, one view per
         # delay level, in order.
         self.views = [self.connections.view(*v.index_bounds())
-                      for v in connections]
+                      for v in delay_connections]
         self.arrival_levels = (self.block_data['longest_paths'].values
                                .astype(np.int32))
 
