@@ -50,7 +50,6 @@ def prepare_device_timing_data(connections, sync_logic_block_keys, source):
          times)_.
     '''
     block_count = connections.block_key.unique().size
-    source = CONNECTION_DRIVER
 
     if source == CONNECTION_DRIVER:
         source_label = 'driver_key'
