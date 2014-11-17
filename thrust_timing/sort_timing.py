@@ -53,12 +53,12 @@ def prepare_device_timing_data(connections, sync_logic_block_keys, source):
     source = CONNECTION_DRIVER
 
     if source == CONNECTION_DRIVER:
-        source_label = 'net_key'
+        source_label = 'driver_key'
         target_label = 'block_key'
         external_block_type = INPUT_BLOCK
     else:
         source_label = 'block_key'
-        target_label = 'net_key'
+        target_label = 'driver_key'
         external_block_type = OUTPUT_BLOCK
 
     delay_connections = (connections.loc[connections.type == CONNECTION_SINK]
