@@ -30,8 +30,8 @@ except:
 def get_arch_data(nrows, ncols, allocator=dv):
     h5f = open_netlists_h5f()
 
-    arch = getattr(h5f.root.architectures.vpr__k4_n1, 'x%04d_by_y%04d' %
-                (nrows, ncols))
+    arch = getattr(h5f.root.architectures.vpr__4lut_sanitized, 'x%04d_by_y%04d'
+                   % (nrows, ncols))
 
     arch_data = DeviceVectorCollection({'delays':
                                         np.empty(np.sum([np.prod(c.shape)
@@ -41,7 +41,7 @@ def get_arch_data(nrows, ncols, allocator=dv):
 
     offset = 0
 
-    for name in ('fb_to_fb', 'fb_to_io', 'io_to_fb', 'io_to_io'):
+    for name in ('clb_to_clb', 'clb_to_outpad', 'inpad_to_clb', 'inpad_to_outpad'):
         c = getattr(arch, name)
         c_size = np.prod(c.shape)
         arch_data.v['delays'][offset:offset + c_size] = c[:].ravel()
